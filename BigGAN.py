@@ -505,7 +505,7 @@ def convert_relu(model):
 
 class ImgEncoder(nn.Module):
     """Encoder for VAE"""
-    def __init__(self, dim_z, share_dim, E_lr, E_B1, E_B2, adam_eps=1e-8, in_shape=3, **kwargs):
+    def __init__(self, dim_z, shared_dim, E_lr, E_B1, E_B2, adam_eps=1e-8, in_shape=3, **kwargs):
         super(ImgEncoder, self).__init__()
         orig_network = vision_models.resnet18(pretrained=False)
         convert_bn(orig_network)
