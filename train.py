@@ -91,11 +91,12 @@ def run(config):
         print('Casting D to fp16...')
         D = D.half()
         # Consider automatically reducing SN_eps?
-    GD = model.G_D(G, D)
+    GDE = model.G_D_E(G, D)
     print(G)
     print(D)
-    print('Number of params in G: {} D: {}'.format(
-        *[sum([p.data.nelement() for p in net.parameters()]) for net in [G, D]]))
+    print(E)
+    print('Number of params in G: {} D: {} E: {}'.format(
+        *[sum([p.data.nelement() for p in net.parameters()]) for net in [G, D, E]]))
     # Prepare state dict, which holds things like epoch # and itr #
     state_dict = {'itr': 0, 'epoch': 0, 'save_num': 0, 'save_best_num': 0,
                   'best_IS': 0, 'best_FID': 999999, 'config': config}
@@ -110,9 +111,9 @@ def run(config):
 
     # If parallel, parallelize the GD module
     if config['parallel']:
-        GD = nn.DataParallel(GD)
+        GDE = nn.DataParallel(GDE)
         if config['cross_replica']:
-            patch_replication_callback(GD)
+            patch_replication_callback(GDE)
 
     # Prepare loggers for stats; metrics holds test metrics,
     # lmetrics holds any desired training metrics.
@@ -155,7 +156,7 @@ def run(config):
     fixed_y.sample_()
     # Loaders are loaded, prepare the training function
     if config['which_train_fn'] == 'GAN':
-        train = train_fns.GAN_training_function(G, D, GD, z_, y_,
+        train = train_fns.GAN_training_function(G, D, E, GDE,
                                                 ema, state_dict, config)
     # Else, assume debugging and use the dummy train fn
     else:
