@@ -91,7 +91,7 @@ def run(config):
         print('Casting D to fp16...')
         D = D.half()
         # Consider automatically reducing SN_eps?
-    GDE = model.G_D_E(G, D)
+    GDE = model.G_D_E(G, D, E)
     print(G)
     print(D)
     print(E)
