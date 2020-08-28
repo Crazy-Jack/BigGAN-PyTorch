@@ -13,7 +13,6 @@ import torchvision.models as vision_models
 import layers
 from sync_batchnorm import SynchronizedBatchNorm2d as SyncBatchNorm2d
 
-
 # Architectures for G
 # Attention is passed in in the format '32_64' to mean applying an attention
 # block at both resolution 32x32 and 64x64. Just '64' will apply at 64x64.
@@ -525,5 +524,16 @@ class ImgEncoder(nn.Module):
                                     betas=(self.B1, self.B2), weight_decay=0, eps=self.adam_eps)
     def forward(self, x):
         x_out = self.features(x)
+        x_out = x_out.view(-1, 512)
+
         return self.mean_head(x_out), self.std_head(x_out)
-    
+
+# resnet = vision_models.resnet18(pretrained=False)
+# from torchsummary import summary
+# summary(resnet, (3, 128, 128))
+
+# img = torch.rand(10, 3, 64, 64)
+# Encoder = ImgEncoder(100, 128, 1e-1, 0, 0.999)
+# mean, logvar = Encoder(img)
+# print(mean.shape)
+# print(logvar.shape)
