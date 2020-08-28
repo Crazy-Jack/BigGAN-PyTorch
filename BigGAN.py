@@ -471,6 +471,22 @@ class G_D_E(nn.Module):
 ##########################################
 #            VAE Encoder                 #
 ##########################################
+class LayerNorm2D(torch.nn.Module):
+    def __init__(self, num_features, eps=1e-6, affine=True):
+        super(LayerNorm2D, self).__init__()
+        self.num_features = num_features
+        self.affine = affine
+        self.eps = eps
+        if self.affine:
+            self.gamma = torch.nn.Parameter(torch.ones(1, num_features, 1, 1))
+            self.beta = torch.nn.Parameter(torch.zeros(1, num_features, 1, 1))
+    def forward(self, x):
+        assert x.dim() == 4
+        std_new, mean_new = torch.std_mean(x, dim=(1,2,3),keepdim=True)
+        x_new = (x-mean_new)/(std_new + self.eps)
+        if self.affine:
+            return x_new * self.gamma + self.beta
+        return x_new
 
 def convert_bn(model):
     for child_name, child in model.named_children():
