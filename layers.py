@@ -457,3 +457,16 @@ class DBlock(nn.Module):
     return h + self.shortcut(x)
     
 # dogball
+
+
+class Sparsify_hw(nn.Module):
+    def __init__(self, topk):
+        super().__init__()
+        self.topk = topk
+    def forward(self, x):
+        n,c,h,w = x.shape
+        x_reshape = x.view(n,c,h*w)
+        _, index = torch.topk(x_reshape, self.topk, dim=2)
+        mask = torch.zeros_like(x_reshape).scatter_(2, index, 1)
+        sparse_x = mask * x_reshape
+        return sparse_x.view(n,c,h,w)

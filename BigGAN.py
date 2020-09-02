@@ -13,7 +13,6 @@ import torchvision.models as vision_models
 import layers
 from sync_batchnorm import SynchronizedBatchNorm2d as SyncBatchNorm2d
 
-
 # Architectures for G
 # Attention is passed in in the format '32_64' to mean applying an attention
 # block at both resolution 32x32 and 64x64. Just '64' will apply at 64x64.
