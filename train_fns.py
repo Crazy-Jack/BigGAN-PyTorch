@@ -76,7 +76,7 @@ def GAN_training_function(G, D, E, GDE, ema, state_dict, config):
                 D_fake) / float(config['num_G_accumulations'])
             VAE_recon_loss = losses.vae_recon_loss(G_z, x[counter])
             VAE_kld_loss = losses.vae_kld_loss(mu, log_var)
-            GE_loss = G_loss + VAE_recon_loss * config['lambda_vae_recon'] + VAE_kld_loss['lambda_vae_kld']
+            GE_loss = G_loss + VAE_recon_loss * config['lambda_vae_recon'] + VAE_kld_loss * config['lambda_vae_kld']
             GE_loss.backward()
             counter += 1
 
@@ -105,20 +105,20 @@ def GAN_training_function(G, D, E, GDE, ema, state_dict, config):
     return train
 
 
-''' This function takes in the model, saves the weights (multiple copies if 
+''' This function takes in the model, saves the weights (multiple copies if
     requested), and prepares sample sheets: one consisting of samples given
     a fixed noise seed (to show how the model evolves throughout training),
     a set of full conditional sample sheets, and a set of interp sheets. '''
 
 
-def save_and_sample(G, D, G_ema, z_, y_, fixed_z, fixed_y,
+def save_and_sample(G, D, E, G_ema, fixed_x, fixed_y, z_, y_,
                     state_dict, config, experiment_name):
-    utils.save_weights(G, D, state_dict, config['weights_root'],
+    utils.save_weights(G, D, E, state_dict, config['weights_root'],
                        experiment_name, None, G_ema if config['ema'] else None)
     # Save an additional copy to mitigate accidental corruption if process
     # is killed during a save (it's happened to me before -.-)
     if config['num_save_copies'] > 0:
-        utils.save_weights(G, D, state_dict, config['weights_root'],
+        utils.save_weights(G, D, E, state_dict, config['weights_root'],
                            experiment_name,
                            'copy%d' % state_dict['save_num'],
                            G_ema if config['ema'] else None)
@@ -135,19 +135,27 @@ def save_and_sample(G, D, G_ema, z_, y_, fixed_z, fixed_y,
                                         config['num_standing_accumulations'])
 
     # Save a random sample sheet with fixed z and y
+    # TODO: change here to encode fixed x into z and feed z with fixed y into G
     with torch.no_grad():
         if config['parallel']:
+            print("fixed_x: ", fixed_x.shape)
+            fixed_z, _, _ =  nn.parallel.data_parallel(E, fixed_x)
+            print("fixed_z: ", fixed_z.shape)
+            print("fixed_y: ", fixed_y.shape)
             fixed_Gz = nn.parallel.data_parallel(
                 which_G, (fixed_z, which_G.shared(fixed_y)))
         else:
+            fixed_z, _, _ = E(fixed_x)
             fixed_Gz = which_G(fixed_z, which_G.shared(fixed_y))
     if not os.path.isdir('%s/%s' % (config['samples_root'], experiment_name)):
         os.mkdir('%s/%s' % (config['samples_root'], experiment_name))
     image_filename = '%s/%s/fixed_samples%d.jpg' % (config['samples_root'],
                                                     experiment_name,
                                                     state_dict['itr'])
+
     torchvision.utils.save_image(fixed_Gz.float().cpu(), image_filename,
                                  nrow=int(fixed_Gz.shape[0] ** 0.5), normalize=True)
+
     # For now, every time we save, also save sample sheets
     utils.sample_sheet(which_G,
                        classes_per_sheet=utils.classes_per_sheet_dict[config['dataset']],
@@ -171,9 +179,11 @@ def save_and_sample(G, D, G_ema, z_, y_, fixed_z, fixed_y,
                            fix_z=fix_z, fix_y=fix_y, device='cuda')
 
 
+
+
 ''' This function runs the inception metrics code, checks if the results
-    are an improvement over the previous best (either in IS or FID, 
-    user-specified), logs the results, and saves a best_ copy if it's an 
+    are an improvement over the previous best (either in IS or FID,
+    user-specified), logs the results, and saves a best_ copy if it's an
     improvement. '''
 
 

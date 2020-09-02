@@ -10,6 +10,7 @@ or train_fns.py.
 from __future__ import print_function
 from torch.optim.optimizer import Optimizer
 import math
+import random
 import sys
 import os
 import numpy as np
@@ -614,7 +615,7 @@ def get_data_loaders(dataset, data_root=None, augment=False, batch_size=64,
         train_loader = DataLoader(train_set, batch_size=batch_size,
                                   shuffle=shuffle, **loader_kwargs)
     loaders.append(train_loader)
-    return loaders
+    return loaders, train_set
 
 
 # Utility file to seed rngs
@@ -718,7 +719,7 @@ def join_strings(base_string, strings):
 
 
 # Save a model's weights, optimizer, and the state_dict
-def save_weights(G, D, state_dict, weights_root, experiment_name,
+def save_weights(G, D, E, state_dict, weights_root, experiment_name,
                  name_suffix=None, G_ema=None):
     root = '/'.join([weights_root, experiment_name])
     if not os.path.exists(root):
@@ -730,6 +731,10 @@ def save_weights(G, D, state_dict, weights_root, experiment_name,
     torch.save(G.state_dict(),
                '%s/%s.pth' % (root, join_strings('_', ['G', name_suffix])))
     torch.save(G.optim.state_dict(),
+               '%s/%s.pth' % (root, join_strings('_', ['G_optim', name_suffix])))
+    torch.save(E.state_dict(),
+               '%s/%s.pth' % (root, join_strings('_', ['G', name_suffix])))
+    torch.save(E.optim.state_dict(),
                '%s/%s.pth' % (root, join_strings('_', ['G_optim', name_suffix])))
     torch.save(D.state_dict(),
                '%s/%s.pth' % (root, join_strings('_', ['D', name_suffix])))
@@ -1153,6 +1158,72 @@ def prepare_z_y(G_batch_size, dim_z, nclasses, device='cuda',
     y_.init_distribution('categorical', num_categories=nclasses)
     y_ = y_.to(device, torch.int64)
     return z_, y_
+
+# Convenience function to prepare bz of X and y, but with different class equally sampled
+def prepare_x_y(G_batch_size, my_dataset, experiment_name, config, device='cuda', fp16=False):
+    """sample x and correpond y """
+    # init calculate basic
+    num_class = len(my_dataset.classes)
+    # get class conditional indexes from my_dataset
+    class_img_path_index = [] # a list to store all index for different class index
+    class_inst_num = math.ceil(G_batch_size / num_class)
+
+    for class_index in my_dataset.class_to_idx.values():
+        path_one_class_index = np.where(my_dataset.imgs[:, 1] == str(class_index))[0] # [my_dataset.imgs for i in my_dataset.imgs if int(i[1]) == class_index] # get path for the same class
+        # randomization
+        path_one_class_index_select = np.random.permutation(path_one_class_index)[:class_inst_num]
+        class_img_path_index.extend(path_one_class_index_select)
+
+    if my_dataset.load_in_mem:
+        imgs = [my_dataset.data[i].unsqueeze(0) for i in class_img_path_index]
+        targets = [int(my_dataset.labels[i]) for i in class_img_path_index]
+
+    else:
+        # load data for one batch
+        imgs = []
+        targets = []
+        
+        for pt_idx in class_img_path_index:
+            path, target = my_dataset.imgs[pt_idx]
+            img = my_dataset.loader(str(path))
+            
+            if my_dataset.transform is not None:
+                img = my_dataset.transform(img)
+                img = img.unsqueeze(0)
+            imgs.append(img)
+
+            if my_dataset.target_transform is not None:
+                target = my_dataset.target_transform(target)     
+            targets.append(int(target))
+
+    # collate_fn
+    imgs_tensor = torch.cat(imgs, 0).to(device)
+    target_tensor = torch.LongTensor(targets).to(device)
+
+    # # convert target_tensor to one hot encoding
+    # assert num_class == torch.max(target_tensor) + 1
+    # target_tensor = torch.zeros(target_tensor.shape[0], num_class).to(device).scatter_(1, target_tensor.view(-1, 1), 1).long() 
+
+    # fp16
+    if fp16:
+        imgs_tensor = imgs_tensor.half()
+        target_tensor = target_tensor.half()
+
+    # save
+    save_dir = '%s/%s' % (config['samples_root'], experiment_name)
+    os.makedirs(save_dir, exist_ok=True)
+    original_x_filename_fig = save_dir + '/fixed_original.jpg'
+    original_x_filename = save_dir + '/fixed_original_x.npy'
+    original_y_filename = save_dir + '/fixed_original_class.npy'
+    torchvision.utils.save_image(imgs_tensor.float().cpu(), original_x_filename_fig,
+                                 nrow=int(imgs_tensor.shape[0] ** 0.5), normalize=True)
+    np.save(original_y_filename, target_tensor.cpu().numpy())
+    np.save(original_x_filename, imgs_tensor.float().cpu().numpy())
+    return imgs_tensor, target_tensor
+
+
+        
+
 
 
 def initiate_standing_stats(net):

@@ -1,1 +1,8 @@
+weights/
+samples/
+logs/
+imgs/
+*imgs.npz
+*inception_moments.npz
+__pycache__
 

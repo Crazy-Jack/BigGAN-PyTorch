@@ -433,11 +433,7 @@ class G_D_E(nn.Module):
         # If training G, enable grad tape
         with torch.set_grad_enabled(train_G):
             # Encode image by VAE
-            mean, logvar = self.E(x)
-            # reparameterization trick for VAE
-            std = torch.exp(0.5 * logvar)
-            eps = torch.randn_like(std)
-            z = eps * std + mean
+            z, mean, logvar = self.E(x)
             # Get Generator output given noise
             G_z = self.G(z, self.G.shared(y))
             # Cast as necessary
@@ -525,5 +521,15 @@ class ImgEncoder(nn.Module):
                                     betas=(self.B1, self.B2), weight_decay=0, eps=self.adam_eps)
     def forward(self, x):
         x_out = self.features(x)
-        return self.mean_head(x_out), self.std_head(x_out)
+        x_out = x_out.view(-1, 512)
+        mean_, logvar_ = self.mean_head(x_out), self.std_head(x_out)
+        z_sample = self.reparameter(mean_, logvar_)
+        return z_sample, mean_, logvar_ 
     
+    def reparameter(self, mean, logvar):
+        """reparameter and return a sampled feature veector"""
+        # reparameterization trick for VAE
+        std = torch.exp(0.5 * logvar)
+        eps = torch.randn_like(std)
+        z = eps * std + mean
+        return z

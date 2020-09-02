@@ -136,7 +136,7 @@ def run(config):
     # a full D iteration (regardless of number of D steps and accumulations)
     D_batch_size = (config['batch_size'] * config['num_D_steps']
                     * config['num_D_accumulations'])
-    loaders = utils.get_data_loaders(**{**config, 'batch_size': D_batch_size,
+    loaders, train_dataset = utils.get_data_loaders(**{**config, 'batch_size': D_batch_size,
                                         'start_itr': state_dict['itr']})
 
     # Prepare inception metrics: FID and IS
@@ -154,6 +154,13 @@ def run(config):
                                          fp16=config['G_fp16'])
     fixed_z.sample_()
     fixed_y.sample_()
+    print("fixed_y original: {} {}".format(fixed_y.shape, fixed_y[:10]))
+    ## TODO: change the sample method to sample x and y
+    fixed_x, fixed_y_of_x = utils.prepare_x_y(G_batch_size, train_dataset, experiment_name, config)
+    
+
+
+
     # Loaders are loaded, prepare the training function
     if config['which_train_fn'] == 'GAN':
         train = train_fns.GAN_training_function(G, D, E, GDE,
@@ -189,10 +196,8 @@ def run(config):
                 x, y = x.to(device).half(), y.to(device)
             else:
                 x, y = x.to(device), y.to(device)
-            ###### TODO: Insert VAE here ######
-            # vae: or move it to train
 
-            # gan
+            # gan and vae
             metrics = train(x, y)
             train_log.log(itr=int(state_dict['itr']), **metrics)
 
@@ -214,7 +219,7 @@ def run(config):
                     G.eval()
                     if config['ema']:
                         G_ema.eval()
-                train_fns.save_and_sample(G, D, G_ema, z_, y_, fixed_z, fixed_y,
+                train_fns.save_and_sample(G, D, E, G_ema, fixed_x, fixed_y_of_x, z_, y_,
                                           state_dict, config, experiment_name)
 
             # Test every specified interval

@@ -17,7 +17,7 @@ from torchvision.datasets.utils import download_url, check_integrity
 import torch.utils.data as data
 from torch.utils.data import DataLoader
 
-IMG_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.ppm', '.bmp', '.pgm']
+IMG_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.ppm', '.bmp', '.pgm', '.webp']
 
 
 def is_image_file(filename):
@@ -137,11 +137,14 @@ class ImageFolder(data.Dataset):
 
         if self.load_in_mem:
             print('Loading all images into memory...')
+
             self.data, self.labels = [], []
             for index in tqdm(range(len(self.imgs))):
                 path, target = imgs[index][0], imgs[index][1]
                 self.data.append(self.transform(self.loader(path)))
                 self.labels.append(target)
+     
+
 
     def __getitem__(self, index):
         """
