@@ -112,34 +112,40 @@ def GAN_training_function(G, D, E, GDE, ema, state_dict, config):
 
 
 def save_and_sample(G, D, E, G_ema, fixed_x, fixed_y, z_, y_,
-                    state_dict, config, experiment_name):
-    utils.save_weights(G, D, E, state_dict, config['weights_root'],
-                       experiment_name, None, G_ema if config['ema'] else None)
-    # Save an additional copy to mitigate accidental corruption if process
-    # is killed during a save (it's happened to me before -.-)
-    if config['num_save_copies'] > 0:
-        utils.save_weights(G, D, E, state_dict, config['weights_root'],
-                           experiment_name,
-                           'copy%d' % state_dict['save_num'],
-                           G_ema if config['ema'] else None)
-        state_dict['save_num'] = (
-            state_dict['save_num'] + 1) % config['num_save_copies']
-
+                    state_dict, config, experiment_name, save_weights=False):
     # Use EMA G for samples or non-EMA?
     which_G = G_ema if config['ema'] and config['use_ema'] else G
 
-    # Accumulate standing statistics?
-    if config['accumulate_stats']:
-        utils.accumulate_standing_stats(G_ema if config['ema'] and config['use_ema'] else G,
-                                        z_, y_, config['n_classes'],
-                                        config['num_standing_accumulations'])
+    if save_weights:
+        utils.save_weights(G, D, E, state_dict, config['weights_root'],
+                           experiment_name, None, G_ema if config['ema'] else None)
+        # Save an additional copy to mitigate accidental corruption if process
+        # is killed during a save (it's happened to me before -.-)
+        if config['num_save_copies'] > 0:
+            utils.save_weights(G, D, E, state_dict, config['weights_root'],
+                               experiment_name,
+                               'copy%d' % state_dict['save_num'],
+                               G_ema if config['ema'] else None)
+            state_dict['save_num'] = (
+                state_dict['save_num'] + 1) % config['num_save_copies']
+
+
+
+        # Accumulate standing statistics?
+        if config['accumulate_stats']:
+            utils.accumulate_standing_stats(G_ema if config['ema'] and config['use_ema'] else G,
+                                            z_, y_, config['n_classes'],
+                                            config['num_standing_accumulations'])
 
     # Save a random sample sheet with fixed z and y
     # TODO: change here to encode fixed x into z and feed z with fixed y into G
     with torch.no_grad():
         if config['parallel']:
             print("fixed_x: ", fixed_x.shape)
-            fixed_z, _, _ =  nn.parallel.data_parallel(E, fixed_x)
+            if config['inference_nosample']:
+                _, fixed_z, _ = nn.parallel.data_parallel(E, fixed_x)
+            else:
+                fixed_z, _, _ =  nn.parallel.data_parallel(E, fixed_x)
             print("fixed_z: ", fixed_z.shape)
             print("fixed_y: ", fixed_y.shape)
             fixed_Gz = nn.parallel.data_parallel(

@@ -16,7 +16,7 @@ from sync_batchnorm import SynchronizedBatchNorm2d as SyncBatchNorm2d
 # Architectures for G
 # Attention is passed in in the format '32_64' to mean applying an attention
 # block at both resolution 32x32 and 64x64. Just '64' will apply at 64x64.
-def G_arch(ch=64, attention='64', ksize='333333', dilation='111111'):
+def G_arch(ch=64, attention='64', ksize='333333', dilation='111111', sparsity='8_16_32_64', sparsity_ratio='20_10_10_5'):
     arch = {}
     arch[512] = {'in_channels':  [ch * item for item in [16, 16, 8, 8, 4, 2, 1]],
                  'out_channels': [ch * item for item in [16,  8, 8, 4, 2, 1, 1]],
@@ -30,12 +30,21 @@ def G_arch(ch=64, attention='64', ksize='333333', dilation='111111'):
                  'resolution': [8, 16, 32, 64, 128, 256],
                  'attention': {2**i: (2**i in [int(item) for item in attention.split('_')])
                                for i in range(3, 9)}}
+    # arch[128] = {'in_channels':  [ch * item for item in [16, 16, 8, 4, 2]],
+    #              'out_channels': [ch * item for item in [16, 8, 4, 2, 1]],
+    #              'upsample': [True] * 5,
+    #              'resolution': [8, 16, 32, 64, 128],
+    #              'attention': {2**i: (2**i in [int(item) for item in attention.split('_')])
+    #                            for i in range(3, 8)}}
     arch[128] = {'in_channels':  [ch * item for item in [16, 16, 8, 4, 2]],
                  'out_channels': [ch * item for item in [16, 8, 4, 2, 1]],
                  'upsample': [True] * 5,
                  'resolution': [8, 16, 32, 64, 128],
                  'attention': {2**i: (2**i in [int(item) for item in attention.split('_')])
-                               for i in range(3, 8)}}
+                               for i in range(3, 8)},
+                 'sparsity': {2**i: [int(item) if i in [int(resolute) for resolute in sparsity.split('_')] else False
+                                     for item in sparsity_ratio.split('_')][i] for i in range(3, 8)},                            
+                }
     arch[64] = {'in_channels':  [ch * item for item in [16, 16, 8, 4]],
                 'out_channels': [ch * item for item in [16, 8, 4, 2]],
                 'upsample': [True] * 4,
@@ -105,6 +114,7 @@ class Generator(nn.Module):
         self.fp16 = G_fp16
         # Architecture dict
         self.arch = G_arch(self.ch, self.attention)[resolution]
+
 
         # If using hierarchical latents, adjust z
         if self.hier:
@@ -502,7 +512,9 @@ class ImgEncoder(nn.Module):
     """Encoder for VAE"""
     def __init__(self, dim_z, shared_dim, E_lr, E_B1, E_B2, adam_eps=1e-8, in_shape=3, **kwargs):
         super(ImgEncoder, self).__init__()
-        orig_network = vision_models.resnet18(pretrained=False)
+        if 
+        encoder = vision_models.resnet50
+        orig_network = encoder(pretrained=False)
         convert_bn(orig_network)
         convert_relu(orig_network)
         if in_shape!=3:

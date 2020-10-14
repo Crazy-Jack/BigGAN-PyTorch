@@ -358,6 +358,10 @@ def prepare_parser():
     parser.add_argument(
         '--resume', action='store_true', default=False,
         help='Resume training? (default: %(default)s)')
+    parser.add_argument(
+        '--load_experiment_name', type=str, default='',
+        help='load training path (default: %(default)s)')
+
 
     ### Log stuff ###
     parser.add_argument(
@@ -380,6 +384,10 @@ def prepare_parser():
         help='Iteration interval for logging singular values '
         ' (default: %(default)s)')
 
+    ### sampling stuff ###
+    parser.add_argument(
+        '--inference_nosample', action='store_true', default=False,
+        help='whether inferecne with sample or not? ')
     return parser
 
 # Arguments for sample.py; not presently used in train.py
@@ -733,9 +741,9 @@ def save_weights(G, D, E, state_dict, weights_root, experiment_name,
     torch.save(G.optim.state_dict(),
                '%s/%s.pth' % (root, join_strings('_', ['G_optim', name_suffix])))
     torch.save(E.state_dict(),
-               '%s/%s.pth' % (root, join_strings('_', ['G', name_suffix])))
+               '%s/%s.pth' % (root, join_strings('_', ['E', name_suffix])))
     torch.save(E.optim.state_dict(),
-               '%s/%s.pth' % (root, join_strings('_', ['G_optim', name_suffix])))
+               '%s/%s.pth' % (root, join_strings('_', ['E_optim', name_suffix])))
     torch.save(D.state_dict(),
                '%s/%s.pth' % (root, join_strings('_', ['D', name_suffix])))
     torch.save(D.optim.state_dict(),
@@ -748,7 +756,7 @@ def save_weights(G, D, E, state_dict, weights_root, experiment_name,
 
 
 # Load a model's weights, optimizer, and the state_dict
-def load_weights(G, D, state_dict, weights_root, experiment_name,
+def load_weights(G, D, E, state_dict, weights_root, experiment_name,
                  name_suffix=None, G_ema=None, strict=True, load_optim=True):
     root = '/'.join([weights_root, experiment_name])
     if name_suffix:
@@ -771,6 +779,14 @@ def load_weights(G, D, state_dict, weights_root, experiment_name,
         if load_optim:
             D.optim.load_state_dict(
                 torch.load('%s/%s.pth' % (root, join_strings('_', ['D_optim', name_suffix]))))
+    if E is not None:
+        E.load_state_dict(
+            torch.load('%s/%s.pth' %
+                       (root, join_strings('_', ['E', name_suffix]))),
+            strict=strict)
+        if load_optim:
+            E.optim.load_state_dict(
+                torch.load('%s/%s.pth' % (root, join_strings('_', ['E_optim', name_suffix]))))
     # Load state dict
     for item in state_dict:
         state_dict[item] = torch.load(
@@ -1068,6 +1084,9 @@ def name_from_config(config):
             'Gshared' if config['G_shared'] else None,
             'hier' if config['hier'] else None,
             'ema' if config['ema'] else None,
+            'inference_nosample' if config['inference_nosample'] else None,
+            'lambda_vae_kld%3.3f' % config['lambda_vae_kld'],
+            'lambda_vae_recon%3.3f' % config['lambda_vae_recon'],
             config['name_suffix'] if config['name_suffix'] else None,
         ]
         if item is not None])
@@ -1182,18 +1201,18 @@ def prepare_x_y(G_batch_size, my_dataset, experiment_name, config, device='cuda'
         # load data for one batch
         imgs = []
         targets = []
-        
+
         for pt_idx in class_img_path_index:
             path, target = my_dataset.imgs[pt_idx]
             img = my_dataset.loader(str(path))
-            
+
             if my_dataset.transform is not None:
                 img = my_dataset.transform(img)
                 img = img.unsqueeze(0)
             imgs.append(img)
 
             if my_dataset.target_transform is not None:
-                target = my_dataset.target_transform(target)     
+                target = my_dataset.target_transform(target)
             targets.append(int(target))
 
     # collate_fn
@@ -1202,7 +1221,7 @@ def prepare_x_y(G_batch_size, my_dataset, experiment_name, config, device='cuda'
 
     # # convert target_tensor to one hot encoding
     # assert num_class == torch.max(target_tensor) + 1
-    # target_tensor = torch.zeros(target_tensor.shape[0], num_class).to(device).scatter_(1, target_tensor.view(-1, 1), 1).long() 
+    # target_tensor = torch.zeros(target_tensor.shape[0], num_class).to(device).scatter_(1, target_tensor.view(-1, 1), 1).long()
 
     # fp16
     if fp16:
@@ -1222,7 +1241,7 @@ def prepare_x_y(G_batch_size, my_dataset, experiment_name, config, device='cuda'
     return imgs_tensor, target_tensor
 
 
-        
+
 
 
 
