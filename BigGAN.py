@@ -9,6 +9,7 @@ import torch.optim as optim
 import torch.nn.functional as F
 from torch.nn import Parameter as P
 import torchvision.models as vision_models
+from torchsummary import summary
 
 import layers
 from sync_batchnorm import SynchronizedBatchNorm2d as SyncBatchNorm2d
@@ -18,45 +19,44 @@ from sync_batchnorm import SynchronizedBatchNorm2d as SyncBatchNorm2d
 # block at both resolution 32x32 and 64x64. Just '64' will apply at 64x64.
 def G_arch(ch=64, attention='64', ksize='333333', dilation='111111', sparsity='8_16_32_64', sparsity_ratio='20_10_10_5'):
     arch = {}
+    assert len(sparsity.split('_')) == len(sparsity_ratio.split('_')), "length sparsity and sparsity_ratio doesn't match"
+    sparsity_pairs = {pair[0]: 0.01 * pair[1] for pair in zip([int(resolute) for resolute in sparsity.split('_')], [int(ratio) for ratio in sparsity_ratio.split('_')])}
+    print(sparsity_pairs)
     arch[512] = {'in_channels':  [ch * item for item in [16, 16, 8, 8, 4, 2, 1]],
                  'out_channels': [ch * item for item in [16,  8, 8, 4, 2, 1, 1]],
                  'upsample': [True] * 7,
                  'resolution': [8, 16, 32, 64, 128, 256, 512],
                  'attention': {2**i: (2**i in [int(item) for item in attention.split('_')])
-                               for i in range(3, 10)}}
+                               for i in range(3, 10)},
+                 'sparsity':  {**{i:False for i in [8, 16, 32, 64, 128, 256, 512] if i not in sparsity_pairs}, **sparsity_pairs}}
     arch[256] = {'in_channels':  [ch * item for item in [16, 16, 8, 8, 4, 2]],
                  'out_channels': [ch * item for item in [16,  8, 8, 4, 2, 1]],
                  'upsample': [True] * 6,
                  'resolution': [8, 16, 32, 64, 128, 256],
                  'attention': {2**i: (2**i in [int(item) for item in attention.split('_')])
-                               for i in range(3, 9)}}
-    # arch[128] = {'in_channels':  [ch * item for item in [16, 16, 8, 4, 2]],
-    #              'out_channels': [ch * item for item in [16, 8, 4, 2, 1]],
-    #              'upsample': [True] * 5,
-    #              'resolution': [8, 16, 32, 64, 128],
-    #              'attention': {2**i: (2**i in [int(item) for item in attention.split('_')])
-    #                            for i in range(3, 8)}}
+                               for i in range(3, 9)},
+                 'sparsity':  {**{i:False for i in [8, 16, 32, 64, 128] if i not in sparsity_pairs}, **sparsity_pairs}}
     arch[128] = {'in_channels':  [ch * item for item in [16, 16, 8, 4, 2]],
                  'out_channels': [ch * item for item in [16, 8, 4, 2, 1]],
                  'upsample': [True] * 5,
                  'resolution': [8, 16, 32, 64, 128],
                  'attention': {2**i: (2**i in [int(item) for item in attention.split('_')])
                                for i in range(3, 8)},
-                 'sparsity': {2**i: [int(item) if i in [int(resolute) for resolute in sparsity.split('_')] else False
-                                     for item in sparsity_ratio.split('_')][i] for i in range(3, 8)},                            
-                }
+                 'sparsity':  {**{i:False for i in [8, 16, 32, 64, 128] if i not in sparsity_pairs}, **sparsity_pairs}}
     arch[64] = {'in_channels':  [ch * item for item in [16, 16, 8, 4]],
                 'out_channels': [ch * item for item in [16, 8, 4, 2]],
                 'upsample': [True] * 4,
                 'resolution': [8, 16, 32, 64],
                 'attention': {2**i: (2**i in [int(item) for item in attention.split('_')])
-                              for i in range(3, 7)}}
+                              for i in range(3, 7)},
+                'sparsity':  {**{i:False for i in [8, 16, 32, 64] if i not in sparsity_pairs}, **sparsity_pairs}}
     arch[32] = {'in_channels':  [ch * item for item in [4, 4, 4]],
                 'out_channels': [ch * item for item in [4, 4, 4]],
                 'upsample': [True] * 3,
                 'resolution': [8, 16, 32],
                 'attention': {2**i: (2**i in [int(item) for item in attention.split('_')])
-                              for i in range(3, 6)}}
+                              for i in range(3, 6)},
+                'sparsity':  {**{i:False for i in [8, 16, 32] if i not in sparsity_pairs}, **sparsity_pairs}}
 
     return arch
 
@@ -71,7 +71,7 @@ class Generator(nn.Module):
                  G_lr=5e-5, G_B1=0.0, G_B2=0.999, adam_eps=1e-8,
                  BN_eps=1e-5, SN_eps=1e-12, G_mixed_precision=False, G_fp16=False,
                  G_init='ortho', skip_init=False, no_optim=False,
-                 G_param='SN', norm_style='bn',
+                 G_param='SN', norm_style='bn', sparsity='', sparsity_ratio='', no_sparsity=True,
                  **kwargs):
         super(Generator, self).__init__()
         # Channel width mulitplier
@@ -112,8 +112,11 @@ class Generator(nn.Module):
         self.SN_eps = SN_eps
         # fp16?
         self.fp16 = G_fp16
+        # Sparsity 
+        self.sparsity, self.sparsity_ratio = sparsity, sparsity_ratio
+        self.no_sparsity = no_sparsity
         # Architecture dict
-        self.arch = G_arch(self.ch, self.attention)[resolution]
+        self.arch = G_arch(self.ch, self.attention, sparsity=self.sparsity, sparsity_ratio=self.sparsity_ratio)[resolution]
 
 
         # If using hierarchical latents, adjust z
@@ -182,7 +185,14 @@ class Generator(nn.Module):
                       self.arch['resolution'][index])
                 self.blocks[-1] += [layers.Attention(
                     self.arch['out_channels'][index], self.which_conv)]
-
+            
+            if not no_sparsity:
+                # If sparsity on this block, attach it to the end
+                sparse_percent = self.arch['sparsity'][self.arch['resolution'][index]]
+                if sparse_percent:
+                    print('Adding sparsity layer in G at resolution %d' %
+                        self.arch['resolution'][index])
+                    self.blocks[-1] += [layers.Sparsify_hw(sparse_percent)]
         # Turn self.blocks into a ModuleList so that it's all properly registered.
         self.blocks = nn.ModuleList([nn.ModuleList(block)
                                      for block in self.blocks])
@@ -248,6 +258,7 @@ class Generator(nn.Module):
         if self.hier:
             zs = torch.split(z, self.z_chunk_size, 1)
             z = zs[0]
+            # print(y.shape, zs[1:][0].shape)
             ys = [torch.cat([y, item], 1) for item in zs[1:]]
         else:
             ys = [y] * len(self.blocks)
@@ -444,6 +455,8 @@ class G_D_E(nn.Module):
             # Encode image by VAE
             z, mean, logvar = self.E(x)
             # Get Generator output given noise
+            print("self.G.shared(y)", self.G.shared(y).shape)
+            print("z", z.shape)
             G_z = self.G(z, self.G.shared(y))
             # Cast as necessary
             if self.G.fp16 and not self.D.fp16:
@@ -510,16 +523,29 @@ def convert_relu(model):
 
 class ImgEncoder(nn.Module):
     """Encoder for VAE"""
-    def __init__(self, dim_z, shared_dim, E_lr, E_B1, E_B2, adam_eps=1e-8, in_shape=3, **kwargs):
+    def __init__(self, dim_z, shared_dim, E_lr, E_B1, E_B2, adam_eps=1e-8, in_shape=3, encoder='Resnet-18', **kwargs):
         super(ImgEncoder, self).__init__()
-        if 
-        encoder = vision_models.resnet50
-        orig_network = encoder(pretrained=False)
-        convert_bn(orig_network)
-        convert_relu(orig_network)
-        if in_shape!=3:
-            orig_network._modules['conv1'] = nn.Conv2d(in_channels=in_shape, out_channels=64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3), bias=False)
-        self.features = nn.Sequential(*list(orig_network.children())[:9])
+        if encoder == 'Resnet-50':
+            orig_network = vision_models.resnet50(pretrained=False)
+        elif encoder == 'Resnet-18':
+            orig_network = vision_models.resnet18(pretrained=False)
+        elif encoder == 'Resnet-34':
+            orig_network = vision_models.resnet34(pretrained=False)
+        else:
+            raise NotImplementedError("encoder type {} not supported.".format(encoder))
+        
+        # customize for resnet
+        if encoder in ['Resnet-50', 'Resnet-34', 'Resnet-18']:
+            convert_bn(orig_network)
+            convert_relu(orig_network)
+            if in_shape!=3:
+                orig_network._modules['conv1'] = nn.Conv2d(in_channels=in_shape, out_channels=64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3), bias=False)
+            self.features = nn.Sequential(*list(orig_network.children())[:9])
+            
+            # self.features = nn.Sequential(*list(orig_network.children()))
+            # summary(self.features, (3, 128, 128))
+        else:
+            raise NotImplementedError("encoder type {} not supported.".format(encoder))
 
         if shared_dim > 0:
             dim_z = shared_dim

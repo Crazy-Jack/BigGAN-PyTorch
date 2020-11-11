@@ -92,9 +92,9 @@ def run(config):
         D = D.half()
         # Consider automatically reducing SN_eps?
     GDE = model.G_D_E(G, D, E)
-    print(G)
-    print(D)
-    print(E)
+    # print(G)
+    # print(D)
+    # print(E)
     print('Number of params in G: {} D: {} E: {}'.format(
         *[sum([p.data.nelement() for p in net.parameters()]) for net in [G, D, E]]))
     # Prepare state dict, which holds things like epoch # and itr #

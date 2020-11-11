@@ -388,6 +388,22 @@ def prepare_parser():
     parser.add_argument(
         '--inference_nosample', action='store_true', default=False,
         help='whether inferecne with sample or not? ')
+
+    ### Sparsity stuff ###
+    parser.add_argument(
+        '--no_sparsity', action='store_true', help="if present, kill sparsity in BigGAN"
+    )
+    parser.add_argument(
+        '--sparsity', type=str, default='16_32_64',
+        help='which resolution apply for sparsity_hw')
+    parser.add_argument(
+        '--sparsity_ratio', type=str, default='10_10_5',
+        help='which resolution apply for sparsity_hw')
+
+    ### Encoder ###
+    parser.add_argument(
+        '--encoder', type=str, default='Resnet-50',
+        help='which encoder used here')
     return parser
 
 # Arguments for sample.py; not presently used in train.py
@@ -1049,6 +1065,8 @@ def get_SVs(net, prefix):
 def name_from_config(config):
     name = '_'.join([
         item for item in [
+            'sparse_%s' % config['sparsity'],
+            'sparse_ratio_%s' % config['sparsity_ratio'],
             'Big%s' % config['which_train_fn'],
             config['dataset'],
             config['model'] if config['model'] != 'BigGAN' else None,
@@ -1087,6 +1105,7 @@ def name_from_config(config):
             'inference_nosample' if config['inference_nosample'] else None,
             'lambda_vae_kld%3.3f' % config['lambda_vae_kld'],
             'lambda_vae_recon%3.3f' % config['lambda_vae_recon'],
+            'encoder_%s' % config['encoder'],
             config['name_suffix'] if config['name_suffix'] else None,
         ]
         if item is not None])

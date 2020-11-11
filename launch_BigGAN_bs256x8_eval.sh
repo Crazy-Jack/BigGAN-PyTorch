@@ -15,12 +15,15 @@ python test.py \
 --G_eval_mode \
 --G_ch 96 --D_ch 96 \
 --ema --use_ema --ema_start 20000 \
---test_every 2000 --save_every 100 --num_best_copies 5 --num_save_copies 1 --seed 0 \
+--test_every 2000 --save_every 100 --num_best_copies 5 --num_save_copies 1 --seed 11 \
 --use_multiepoch_sampler \
 --pbar tqdm \
 --inference_nosample \
---load_experiment_name BigGAN_Mysmall_128_seed0_Gch96_Dch96_bs64_nDa8_nGa8_Glr1.0e-04_Dlr4.0e-04_Gnlinplace_relu_Dnlinplace_relu_Ginitortho_Dinitortho_Gattn64_Dattn64_Gshared_hier_ema \
---resume
+--load_experiment_name VAE18_GAN_selfatt \
+--experiment_name test_VAE18_GAN_selfatt_get_activation \
+--resume \
+--encoder Resnet-18 \
+--no_sparsity \
 
 
 # --load_in_mem

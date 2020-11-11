@@ -462,11 +462,24 @@ class DBlock(nn.Module):
 class Sparsify_hw(nn.Module):
     def __init__(self, topk):
         super().__init__()
-        self.topk = topk
+        self.topk = topk # percent of the top reponse to keep
     def forward(self, x):
-        n,c,h,w = x.shape
-        x_reshape = x.view(n,c,h*w)
-        _, index = torch.topk(x_reshape, self.topk, dim=2)
+        n, c, h, w = x.shape
+        x_reshape = x.view(n, c, h * w)
+        keep_top_num = int(self.topk * h * w)
+        _, index = torch.topk(x_reshape, keep_top_num, dim=2)
         mask = torch.zeros_like(x_reshape).scatter_(2, index, 1)
         sparse_x = mask * x_reshape
         return sparse_x.view(n,c,h,w)
+
+class Sparsify_ch(nn.Module):
+    def __init__(self, topk):
+        super().__init__()
+        self.topk = topk # percent of the top reponse to keep
+    def forward(self, x):
+        n, c, h, w = x.shape
+        keep_top_num = int(self.topk * c)
+        _, index = torch.topk(x, keep_top_num, dim=1)
+        mask = torch.zeros_like(x).scatter_(1, index, 1)
+        sparse_x = mask * x
+        return sparse_x.view(n,c,h,w) 

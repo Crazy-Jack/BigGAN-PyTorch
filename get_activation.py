@@ -30,6 +30,69 @@ import train_fns
 from sync_batchnorm import patch_replication_callback
 
 
+def activation_extract(G, D, E, G_ema, fixed_x, fixed_y, z_, y_,
+                    state_dict, config, experiment_name, save_weights=False):
+    # Use EMA G for samples or non-EMA?
+    which_G = G_ema if config['ema'] and config['use_ema'] else G
+
+    # Save a random sample sheet with fixed z and y
+    # TODO: change here to encode fixed x into z and feed z with fixed y into G
+    print("check2 ---------------------------")
+    with torch.no_grad():
+        if config['parallel']:
+            print("fixed_x: ", fixed_x.shape)
+            if config['inference_nosample']:
+                _, fixed_z, _ = nn.parallel.data_parallel(E, fixed_x)
+            else:
+                fixed_z, _, _ =  nn.parallel.data_parallel(E, fixed_x)
+            print("fixed_z: ", fixed_z.shape)
+            print("fixed_y: ", fixed_y.shape)
+            fixed_Gz = nn.parallel.data_parallel(
+                which_G, (fixed_z, which_G.shared(fixed_y)))
+        else:
+            # print("fixed_x: ", fixed_x.shape)
+            fixed_z, _, _ = E(fixed_x)
+            # print("fixed_z: ", fixed_z.shape)
+            # print("fixed_y: ", fixed_y.shape)
+            #### TODO: Catch the intermediate output here AND save the results into numpy
+            fixed_Gz = which_G(fixed_z, which_G.shared(fixed_y))
+    print("check3 -----------------------------")
+    if not os.path.isdir('%s/%s' % (config['samples_root'], experiment_name)):
+        os.mkdir('%s/%s' % (config['samples_root'], experiment_name))
+    image_filename = '%s/%s/fixed_samples%d.jpg' % (config['samples_root'],
+                                                    experiment_name,
+                                                    state_dict['itr'])
+    print("######### save_path #####: ", image_filename)
+
+    torchvision.utils.save_image(fixed_Gz.float().cpu(), image_filename,
+                                 nrow=int(fixed_Gz.shape[0] ** 0.5), normalize=True)
+
+    # For now, every time we save, also save sample sheets
+    utils.sample_sheet(which_G,
+                       classes_per_sheet=utils.classes_per_sheet_dict[config['dataset']],
+                       num_classes=config['n_classes'],
+                       samples_per_class=10, parallel=config['parallel'],
+                       samples_root=config['samples_root'],
+                       experiment_name=experiment_name,
+                       folder_number=state_dict['itr'],
+                       z_=z_)
+    # Also save interp sheets
+    for fix_z, fix_y in zip([False, False, True], [False, True, False]):
+        utils.interp_sheet(which_G,
+                           num_per_sheet=16,
+                           num_midpoints=8,
+                           num_classes=config['n_classes'],
+                           parallel=config['parallel'],
+                           samples_root=config['samples_root'],
+                           experiment_name=experiment_name,
+                           folder_number=state_dict['itr'],
+                           sheet_number=0,
+                           fix_z=fix_z, fix_y=fix_y, device='cuda')
+
+
+
+
+
 
 def run(config):
 
@@ -90,9 +153,10 @@ def run(config):
         D = D.half()
         # Consider automatically reducing SN_eps?
     GDE = model.G_D_E(G, D, E)
-    print(G)
-    print(D)
-    print(E)
+    # print(G)
+    # print(D)
+    # print(E)
+    print("Model Created!")
     print('Number of params in G: {} D: {} E: {}'.format(
         *[sum([p.data.nelement() for p in net.parameters()]) for net in [G, D, E]]))
     # Prepare state dict, which holds things like epoch # and itr #
@@ -138,7 +202,8 @@ def run(config):
 
     G.eval()
     E.eval()
-    train_fns.save_and_sample(G, D, E, G_ema, fixed_x, fixed_y_of_x, z_, y_,
+    print("check1 -------------------------------")
+    activation_extract(G, D, E, G_ema, fixed_x, fixed_y_of_x, z_, y_,
                                           state_dict, config, experiment_name,
                                            save_weights=False)
 
