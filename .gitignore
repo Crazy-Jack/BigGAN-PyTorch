@@ -5,4 +5,6 @@ imgs/
 *imgs.npz
 *inception_moments.npz
 __pycache__*
+*npy
+*.png
 

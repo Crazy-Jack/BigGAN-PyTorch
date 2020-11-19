@@ -253,7 +253,7 @@ class Generator(nn.Module):
     # already been passed through G.shared to enable easy class-wise
     # interpolation later. If we passed in the one-hot and then ran it through
     # G.shared in this forward function, it would be harder to handle.
-    def forward(self, z, y):
+    def forward(self, z, y, return_inter_activation=False):
         # If hierarchical, concatenate zs and ys
         if self.hier:
             zs = torch.split(z, self.z_chunk_size, 1)
@@ -268,14 +268,23 @@ class Generator(nn.Module):
         # Reshape
         h = h.view(h.size(0), -1, self.bottom_width, self.bottom_width)
 
+        # prepare list for intermediate output
+        intermediates = {}
         # Loop over blocks
         for index, blocklist in enumerate(self.blocks):
             # Second inner loop in case block has multiple layers
             for block in blocklist:
                 h = block(h, ys[index])
-
+            if return_inter_activation:
+                out = h.cpu().numpy()
+                intermediates[index] = out
+                print("Get activation from block {} : {} ----------- ".format(index, out.shape))
+        
         # Apply batchnorm-relu-conv-tanh at output
-        return torch.tanh(self.output_layer(h))
+        if return_inter_activation:
+            return torch.tanh(self.output_layer(h)), intermediates
+        else:
+            return torch.tanh(self.output_layer(h))
 
 
 # Discriminator architecture, same paradigm as G's above

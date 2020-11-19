@@ -30,6 +30,7 @@ import train_fns
 from sync_batchnorm import patch_replication_callback
 
 
+
 def activation_extract(G, D, E, G_ema, fixed_x, fixed_y, z_, y_,
                     state_dict, config, experiment_name, save_weights=False):
     # Use EMA G for samples or non-EMA?
@@ -47,48 +48,34 @@ def activation_extract(G, D, E, G_ema, fixed_x, fixed_y, z_, y_,
                 fixed_z, _, _ =  nn.parallel.data_parallel(E, fixed_x)
             print("fixed_z: ", fixed_z.shape)
             print("fixed_y: ", fixed_y.shape)
-            fixed_Gz = nn.parallel.data_parallel(
-                which_G, (fixed_z, which_G.shared(fixed_y)))
+            fixed_Gz, intermed_activation = nn.parallel.data_parallel(
+                which_G, (fixed_z, which_G.shared(fixed_y), True))
         else:
             # print("fixed_x: ", fixed_x.shape)
             fixed_z, _, _ = E(fixed_x)
             # print("fixed_z: ", fixed_z.shape)
             # print("fixed_y: ", fixed_y.shape)
             #### TODO: Catch the intermediate output here AND save the results into numpy
-            fixed_Gz = which_G(fixed_z, which_G.shared(fixed_y))
+            fixed_Gz, intermed_activation = which_G(fixed_z, which_G.shared(fixed_y), True)
     print("check3 -----------------------------")
     if not os.path.isdir('%s/%s' % (config['samples_root'], experiment_name)):
         os.mkdir('%s/%s' % (config['samples_root'], experiment_name))
-    image_filename = '%s/%s/fixed_samples%d.jpg' % (config['samples_root'],
+    image_filename = '%s/%s/test_iter_%s.jpg' % (config['samples_root'],
                                                     experiment_name,
                                                     state_dict['itr'])
+    image_origin_filename = '%s/%s/origin_iter_%s.jpg' % (config['samples_root'],
+                                                    experiment_name,
+                                                    state_dict['itr'])
+    activation_filename = '%s/%s/inter_activation_iter_%s.npy' % (config['samples_root'],
+                                                    experiment_name, state_dict['itr'])
     print("######### save_path #####: ", image_filename)
-
+    torchvision.utils.save_image(fixed_x.float().cpu(), image_origin_filename,
+                                 nrow=int(fixed_x.shape[0] ** 0.5), normalize=True)
     torchvision.utils.save_image(fixed_Gz.float().cpu(), image_filename,
                                  nrow=int(fixed_Gz.shape[0] ** 0.5), normalize=True)
+    np.save(activation_filename, intermed_activation)
 
-    # For now, every time we save, also save sample sheets
-    utils.sample_sheet(which_G,
-                       classes_per_sheet=utils.classes_per_sheet_dict[config['dataset']],
-                       num_classes=config['n_classes'],
-                       samples_per_class=10, parallel=config['parallel'],
-                       samples_root=config['samples_root'],
-                       experiment_name=experiment_name,
-                       folder_number=state_dict['itr'],
-                       z_=z_)
-    # Also save interp sheets
-    for fix_z, fix_y in zip([False, False, True], [False, True, False]):
-        utils.interp_sheet(which_G,
-                           num_per_sheet=16,
-                           num_midpoints=8,
-                           num_classes=config['n_classes'],
-                           parallel=config['parallel'],
-                           samples_root=config['samples_root'],
-                           experiment_name=experiment_name,
-                           folder_number=state_dict['itr'],
-                           sheet_number=0,
-                           fix_z=fix_z, fix_y=fix_y, device='cuda')
-
+    
 
 
 
@@ -110,7 +97,7 @@ def run(config):
         print('Skipping initialization for training resumption...')
         config['skip_init'] = True
     config = utils.update_config_roots(config)
-    device = 'cuda'
+    device = 'cpu'
 
     # Seed RNG
     utils.seed_rng(config['seed'])
@@ -170,6 +157,8 @@ def run(config):
                         config['weights_root'], config['load_experiment_name'],
                         config['load_weights'] if config['load_weights'] else None,
                         G_ema if config['ema'] else None)
+    state_dict = {'itr': 0, 'epoch': 0, 'save_num': 0, 'save_best_num': 0,
+                  'best_IS': 0, 'best_FID': 999999, 'config': config}
     # If parallel, parallelize the GD module
     if config['parallel']:
         GDE = nn.DataParallel(GDE)
@@ -180,7 +169,7 @@ def run(config):
     D_batch_size = (config['batch_size'] * config['num_D_steps']
                     * config['num_D_accumulations'])
     loaders, train_dataset = utils.get_data_loaders(**{**config, 'batch_size': D_batch_size,
-                                        'start_itr': state_dict['itr']})
+                                        'start_itr': 0})
 
     z_, y_ = utils.prepare_z_y(G_batch_size, G.dim_z, config['n_classes'],
                                device=device, fp16=config['G_fp16'])
@@ -203,9 +192,30 @@ def run(config):
     G.eval()
     E.eval()
     print("check1 -------------------------------")
-    activation_extract(G, D, E, G_ema, fixed_x, fixed_y_of_x, z_, y_,
+    print("state_dict['itr']", state_dict['itr'])
+    if config['pbar'] == 'mine':
+        pbar = utils.progress(
+                loaders[0], displaytype='s1k' if config['use_multiepoch_sampler'] else 'eta')
+
+    else:
+        pbar = tqdm(loaders[0])
+    
+    print("state_dict['itr']", state_dict['itr'])
+    for i, (x, y) in enumerate(pbar):
+        state_dict['itr'] += 1
+        if config['D_fp16']:
+            x, y = x.to(device).half(), y.to(device)
+        else:
+            x, y = x.to(device), y.to(device)
+        print("x.shape", x.shape)
+        print("y.shape", y.shape)
+        
+   
+        activation_extract(G, D, E, G_ema, x, y, z_, y_,
                                           state_dict, config, experiment_name,
                                            save_weights=False)
+        if state_dict['itr'] == 20:
+            break
 
 
 
