@@ -17,11 +17,14 @@ from sync_batchnorm import SynchronizedBatchNorm2d as SyncBatchNorm2d
 # Architectures for G
 # Attention is passed in in the format '32_64' to mean applying an attention
 # block at both resolution 32x32 and 64x64. Just '64' will apply at 64x64.
-def G_arch(ch=64, attention='64', ksize='333333', dilation='111111', sparsity='8_16_32_64', sparsity_ratio='20_10_10_5'):
+def G_arch(ch=64, attention='64', ksize='333333', dilation='111111', sparsity_resolution='8_16_32_64', sparsity_ratio='20_10_10_5', no_sparsity=False):
     arch = {}
-    assert len(sparsity.split('_')) == len(sparsity_ratio.split('_')), "length sparsity and sparsity_ratio doesn't match"
-    sparsity_pairs = {pair[0]: 0.01 * pair[1] for pair in zip([int(resolute) for resolute in sparsity.split('_')], [int(ratio) for ratio in sparsity_ratio.split('_')])}
-    print(sparsity_pairs)
+    if not no_sparsity:
+        assert len(sparsity_resolution.split('_')) == len(sparsity_ratio.split('_')), "length sparsity and sparsity_ratio doesn't match"
+        sparsity_pairs = {pair[0]: 0.01 * pair[1] for pair in zip([int(resolute) for resolute in sparsity_resolution.split('_')], [int(ratio) for ratio in sparsity_ratio.split('_')])}
+    else:
+        sparsity_pairs = {}
+    print("G_arch sparsity_pairs", sparsity_pairs)
     arch[512] = {'in_channels':  [ch * item for item in [16, 16, 8, 8, 4, 2, 1]],
                  'out_channels': [ch * item for item in [16,  8, 8, 4, 2, 1, 1]],
                  'upsample': [True] * 7,
@@ -71,8 +74,8 @@ class Generator(nn.Module):
                  G_lr=5e-5, G_B1=0.0, G_B2=0.999, adam_eps=1e-8,
                  BN_eps=1e-5, SN_eps=1e-12, G_mixed_precision=False, G_fp16=False,
                  G_init='ortho', skip_init=False, no_optim=False,
-                 G_param='SN', norm_style='bn', sparsity='', sparsity_ratio='', no_sparsity=True,
-                 **kwargs):
+                 G_param='SN', norm_style='bn', sparsity_resolution='', sparsity_ratio='', no_sparsity=True, mask_base=1e-2,
+                 spread_sparsity=False, sparse_decay_rate=1e-4, **kwargs):
         super(Generator, self).__init__()
         # Channel width mulitplier
         self.ch = G_ch
@@ -113,11 +116,15 @@ class Generator(nn.Module):
         # fp16?
         self.fp16 = G_fp16
         # Sparsity 
-        self.sparsity, self.sparsity_ratio = sparsity, sparsity_ratio
+        self.sparsity_resolution, self.sparsity_ratio = sparsity_resolution, sparsity_ratio
         self.no_sparsity = no_sparsity
+        self.spread_sparsity = spread_sparsity
+        self.sparse_decay_rate = sparse_decay_rate
         # Architecture dict
-        self.arch = G_arch(self.ch, self.attention, sparsity=self.sparsity, sparsity_ratio=self.sparsity_ratio)[resolution]
-
+        self.arch = G_arch(self.ch, self.attention, sparsity_resolution=self.sparsity_resolution, \
+                                sparsity_ratio=self.sparsity_ratio, no_sparsity=self.no_sparsity)[resolution]
+        print("G arch sparsity: ", self.arch['sparsity'])
+        self.mask_base = mask_base
 
         # If using hierarchical latents, adjust z
         if self.hier:
@@ -192,7 +199,12 @@ class Generator(nn.Module):
                 if sparse_percent:
                     print('Adding sparsity layer in G at resolution %d' %
                         self.arch['resolution'][index])
-                    self.blocks[-1] += [layers.Sparsify_hw(sparse_percent)]
+                    if not spread_sparsity:
+                        self.blocks[-1] += [layers.Sparsify_all(sparse_percent, self.mask_base)]
+                    else:
+                        print("### Adding sparsity in a spread manner...")
+                        sparse_percent = np.sqrt(sparse_percent).item()
+                        self.blocks[-1] += [layers.Sparsify_ch(sparse_percent), layers.Sparsify_hw(sparse_percent)]
         # Turn self.blocks into a ModuleList so that it's all properly registered.
         self.blocks = nn.ModuleList([nn.ModuleList(block)
                                      for block in self.blocks])
@@ -253,18 +265,18 @@ class Generator(nn.Module):
     # already been passed through G.shared to enable easy class-wise
     # interpolation later. If we passed in the one-hot and then ran it through
     # G.shared in this forward function, it would be harder to handle.
-    def forward(self, z, y, return_inter_activation=False):
+    def forward(self, z, y, iter_num, return_inter_activation=False, sparsity=1, device='cuda'):
         # If hierarchical, concatenate zs and ys
         if self.hier:
             zs = torch.split(z, self.z_chunk_size, 1)
-            z = zs[0]
-            # print(y.shape, zs[1:][0].shape)
+            z = zs[0] 
+            # print("INside G: forward y {}; first z {} ".format(y.shape, z.shape))
             ys = [torch.cat([y, item], 1) for item in zs[1:]]
         else:
             ys = [y] * len(self.blocks)
 
         # First linear layer
-        h = self.linear(z)
+        h = self.linear(z) 
         # Reshape
         h = h.view(h.size(0), -1, self.bottom_width, self.bottom_width)
 
@@ -274,7 +286,18 @@ class Generator(nn.Module):
         for index, blocklist in enumerate(self.blocks):
             # Second inner loop in case block has multiple layers
             for block in blocklist:
-                h = block(h, ys[index])
+                # print("block: h {} ; ys[index] {}".format(h.shape, ys[index].shape))
+                if block.myid in ['sparse_ch', 'sparse_hw']:
+                    # decay linearly:
+                    tau = min(iter_num * self.sparse_decay_rate, 1)
+                    h = block(h, tau)
+                else:
+                    h = block(h, ys[index])
+    
+                # impose sparsity constraint for the activation
+                # if index == 0:
+                #     h = layers.sparsify_layer(h, sparsity=sparsity, device=device)
+
             if return_inter_activation:
                 out = h.cpu().numpy()
                 intermediates[index] = out
@@ -439,11 +462,11 @@ class Discriminator(nn.Module):
             for block in blocklist:
                 h = block(h)
         # Apply global sum pooling as in SN-GAN
-        h = torch.sum(self.activation(h), [2, 3])
+        h = torch.mean(self.activation(h), [2, 3])
         # Get initial class-unconditional output
         out = self.linear(h)
         # Get projection of final featureset onto class vectors and add to evidence
-        out = out + torch.sum(self.embed(y) * h, 1, keepdim=True)
+        out = out + torch.mean(self.embed(y) * h, 1, keepdim=True)
         return out
 
 # Parallelized G_D to minimize cross-gpu communication
@@ -455,18 +478,25 @@ class G_D_E(nn.Module):
         super(G_D_E, self).__init__()
         self.G = G
         self.D = D
-        self.E = E
+        self.E = E 
 
-    def forward(self, x, y, train_G=False, return_G_z=False,
-                split_D=False):
+    def forward(self, x, y, iter_num, train_G=False, return_G_z=False,
+                split_D=False, verbose=False):
         # If training G, enable grad tape
         with torch.set_grad_enabled(train_G):
             # Encode image by VAE
             z, mean, logvar = self.E(x)
+            # print("z", z[0])
+            # print("mean", mean[0])
+            # print("logvar", logvar[0])
             # Get Generator output given noise
-            print("self.G.shared(y)", self.G.shared(y).shape)
-            print("z", z.shape)
-            G_z = self.G(z, self.G.shared(y))
+            if verbose:
+                print("x inside GDE", x.shape)
+                print("y", y.shape)
+                print("self.G.shared(y)", self.G.shared(y).shape)
+                print("z", z.shape)
+            G_z = self.G(z, self.G.shared(y), iter_num)
+            # print("G_z", G_z[0])
             # Cast as necessary
             if self.G.fp16 and not self.D.fp16:
                 G_z = G_z.float()
@@ -536,10 +566,13 @@ class ImgEncoder(nn.Module):
         super(ImgEncoder, self).__init__()
         if encoder == 'Resnet-50':
             orig_network = vision_models.resnet50(pretrained=False)
+            self.outdim = 2048
         elif encoder == 'Resnet-18':
             orig_network = vision_models.resnet18(pretrained=False)
+            self.outdim = 512
         elif encoder == 'Resnet-34':
             orig_network = vision_models.resnet34(pretrained=False)
+            self.outdim = 512
         else:
             raise NotImplementedError("encoder type {} not supported.".format(encoder))
         
@@ -558,8 +591,8 @@ class ImgEncoder(nn.Module):
 
         if shared_dim > 0:
             dim_z = shared_dim
-        self.mean_head = torch.nn.Linear(512, dim_z)
-        self.std_head = torch.nn.Linear(512, dim_z)
+        self.mean_head = torch.nn.Linear(self.outdim, dim_z)
+        self.std_head = torch.nn.Linear(self.outdim, dim_z)
 
         # set optimizer
         self.lr, self.B1, self.B2, self.adam_eps = E_lr, E_B1, E_B2, adam_eps
@@ -567,10 +600,154 @@ class ImgEncoder(nn.Module):
                                     betas=(self.B1, self.B2), weight_decay=0, eps=self.adam_eps)
     def forward(self, x):
         x_out = self.features(x)
-        x_out = x_out.view(-1, 512)
+        # print("x_out Encoder {}; input x Encoder: {}".format(x_out.shape, x.shape))
+        x_out = x_out.view(-1, self.outdim)
+        # print("x_out Encoder {}; input x Encoder: {}".format(x_out.shape, x.shape))
         mean_, logvar_ = self.mean_head(x_out), self.std_head(x_out)
         z_sample = self.reparameter(mean_, logvar_)
         return z_sample, mean_, logvar_ 
+    
+    def reparameter(self, mean, logvar):
+        """reparameter and return a sampled feature veector"""
+        # reparameterization trick for VAE
+        std = torch.exp(0.5 * logvar)
+        eps = torch.randn_like(std)
+        z = eps * std + mean
+        return z
+
+
+#################################################
+#        VAE ENCODER based on Discriminator     #
+#################################################
+class Encoder(nn.Module):
+
+    def __init__(self, D_ch=64, D_wide=True, resolution=128,
+                 D_kernel_size=3, D_attn='64', n_classes=1000,
+                 num_D_SVs=1, num_D_SV_itrs=1, D_activation=nn.ReLU(inplace=False),
+                 E_lr=2e-4, D_B1=0.0, D_B2=0.999, adam_eps=1e-8,
+                 SN_eps=1e-12, dim_z=120, D_mixed_precision=False, D_fp16=False,
+                 E_init='ortho', skip_init=False, D_param='SN', **kwargs):
+        super(Encoder, self).__init__()
+        # Width multiplier
+        self.ch = D_ch
+        # Use Wide D as in BigGAN and SA-GAN or skinny D as in SN-GAN?
+        self.D_wide = D_wide
+        # Resolution
+        self.resolution = resolution
+        # Kernel size
+        self.kernel_size = D_kernel_size
+        # Attention?
+        self.attention = D_attn
+        # Number of classes
+        self.n_classes = n_classes
+        # Activation
+        self.activation = D_activation
+        # Initialization style
+        self.init = E_init
+        # Parameterization style
+        self.D_param = D_param
+        # Epsilon for Spectral Norm?
+        self.SN_eps = SN_eps
+        # Fp16?
+        self.fp16 = D_fp16
+        # Architecture
+        self.arch = D_arch(self.ch, self.attention)[resolution]
+
+        # Which convs, batchnorms, and linear layers to use
+        # No option to turn off SN in D right now
+        if self.D_param == 'SN':
+            self.which_conv = functools.partial(layers.SNConv2d,
+                                                kernel_size=3, padding=1,
+                                                num_svs=num_D_SVs, num_itrs=num_D_SV_itrs,
+                                                eps=self.SN_eps)
+            self.which_linear = functools.partial(layers.SNLinear,
+                                                  num_svs=num_D_SVs, num_itrs=num_D_SV_itrs,
+                                                  eps=self.SN_eps)
+            self.which_embedding = functools.partial(layers.SNEmbedding,
+                                                     num_svs=num_D_SVs, num_itrs=num_D_SV_itrs,
+                                                     eps=self.SN_eps)
+        # Prepare model
+        # self.blocks is a doubly-nested list of modules, the outer loop intended
+        # to be over blocks at a given resolution (resblocks and/or self-attention)
+        self.blocks = []
+        for index in range(len(self.arch['out_channels'])):
+            self.blocks += [[layers.DBlock(in_channels=self.arch['in_channels'][index],
+                                           out_channels=self.arch['out_channels'][index],
+                                           which_conv=self.which_conv,
+                                           wide=self.D_wide,
+                                           activation=self.activation,
+                                           preactivation=(index > 0),
+                                           downsample=(nn.AvgPool2d(2) if self.arch['downsample'][index] else None))]]
+            # If attention on this block, attach it to the end
+            if self.arch['attention'][self.arch['resolution'][index]]:
+                print('Adding attention layer in E at resolution %d' %
+                      self.arch['resolution'][index])
+                self.blocks[-1] += [layers.Attention(self.arch['out_channels'][index],
+                                                     self.which_conv)]
+        # Turn self.blocks into a ModuleList so that it's all properly registered.
+        self.blocks = nn.ModuleList([nn.ModuleList(block)
+                                     for block in self.blocks])
+        # Linear output layer. The output dimension is typically 1, but may be
+        # larger if we're e.g. turning this into a VAE with an inference output
+        self.mean_linear = self.which_linear(
+            self.arch['out_channels'][-1], dim_z)
+        self.logvar_linear = self.which_linear(
+            self.arch['out_channels'][-1], dim_z)
+
+        # Initialize weights
+        if not skip_init:
+            self.init_weights()
+
+        # Set up optimizer
+        self.lr, self.B1, self.B2, self.adam_eps = E_lr, D_B1, D_B2, adam_eps
+        if D_mixed_precision:
+            print('Using fp16 adam in E...')
+            import utils
+            self.optim = utils.Adam16(params=self.parameters(), lr=self.lr,
+                                      betas=(self.B1, self.B2), weight_decay=0, eps=self.adam_eps)
+        else:
+            self.optim = optim.Adam(params=self.parameters(), lr=self.lr,
+                                    betas=(self.B1, self.B2), weight_decay=0, eps=self.adam_eps)
+        # LR scheduling, left here for forward compatibility
+        # self.lr_sched = {'itr' : 0}# if self.progressive else {}
+        # self.j = 0
+
+    # Initialize
+    def init_weights(self):
+        self.param_count = 0
+        for module in self.modules():
+            if (isinstance(module, nn.Conv2d)
+                or isinstance(module, nn.Linear)
+                    or isinstance(module, nn.Embedding)):
+                if self.init == 'ortho':
+                    init.orthogonal_(module.weight)
+                elif self.init == 'N02':
+                    init.normal_(module.weight, 0, 0.02)
+                elif self.init in ['glorot', 'xavier']:
+                    init.xavier_uniform_(module.weight)
+                else:
+                    print('Init style not recognized...')
+                self.param_count += sum([p.data.nelement()
+                                         for p in module.parameters()])
+        print('Param count for E''s initialized parameters: %d' %
+              self.param_count)
+
+    def forward(self, x):
+        # Stick x into h for cleaner for loops without flow control
+        h = x
+        # Loop over blocks
+        for index, blocklist in enumerate(self.blocks):
+            for block in blocklist:
+                h = block(h)
+        # Apply global sum pooling as in SN-GAN
+        h = torch.sum(self.activation(h), [2, 3])
+        # Get initial class-unconditional output
+        self.mean = self.mean_linear(h)
+        self.logvar = self.logvar_linear(h)
+        # reparameterized trick
+        # print("mean before repraram", self.mean)
+        z_sample = self.reparameter(self.mean, self.logvar) # (N, latent_dim)
+        return z_sample, self.mean, self.logvar
     
     def reparameter(self, mean, logvar):
         """reparameter and return a sampled feature veector"""

@@ -149,6 +149,9 @@ def prepare_parser():
         '--D_init', type=str, default='ortho',
         help='Init style to use for D(default: %(default)s)')
     parser.add_argument(
+        '--E_init', type=str, default='ortho',
+        help='Init style to use for E(default: %(default)s)')
+    parser.add_argument(
         '--skip_init', action='store_true', default=False,
         help='Skip initialization, ideal for testing when ortho init was used '
         '(default: %(default)s)')
@@ -181,6 +184,10 @@ def prepare_parser():
     parser.add_argument(
         '--E_B2', type=float, default=0.999,
         help='Beta2 to use for Encoder (default: %(default)s)')
+    parser.add_argument(
+        '--clip', type=float, default=200,
+        help='Beta2 to use for Encoder (default: %(default)s)')
+
 
     ### Batch size, parallel, and precision stuff ###
     parser.add_argument(
@@ -295,7 +302,10 @@ def prepare_parser():
         '--config_from_name', action='store_true', default=False,
         help='Use a hash of the experiment name instead of the full config '
         '(default: %(default)s)')
-
+    parser.add_argument(
+        '--save_weights', action='store_true', default=False,
+        help="whether save weights or not, important to set it!"
+    )
     ### EMA Stuff ###
     parser.add_argument(
         '--ema', action='store_true', default=False,
@@ -394,11 +404,23 @@ def prepare_parser():
         '--no_sparsity', action='store_true', help="if present, kill sparsity in BigGAN"
     )
     parser.add_argument(
-        '--sparsity', type=str, default='16_32_64',
+        '--sparsity_resolution', type=str, default='_',
         help='which resolution apply for sparsity_hw')
     parser.add_argument(
-        '--sparsity_ratio', type=str, default='10_10_5',
+        '--sparsity_ratio', type=str, default='_',
         help='which resolution apply for sparsity_hw')
+
+    parser.add_argument(
+        '--mask_base', type=float, default='0.0',
+        help='mask base, if not 0.0, randomly sample a value between [0, mask_base] if the activation is not pass threshold, otherwise mask = 1')
+    parser.add_argument(
+        '--spread_sparsity', action='store_true', default=False,
+        help='whether to use hw + ch sparsity')
+    parser.add_argument(
+        '--sparse_decay_rate', type=float, default=1e-4,
+        help='sparse decay rate tau. progressively control the ratio between sparse version and original map, \
+                (sparse_map * (sparse_decay_rate * step) + original_map * (1 - sparse_decay_rate * step); only works for hw+ch sparse for now')
+
 
     ### Encoder ###
     parser.add_argument(
@@ -959,7 +981,7 @@ def sample(G, z_, y_, config):
 
 # Sample function for sample sheets
 def sample_sheet(G, classes_per_sheet, num_classes, samples_per_class, parallel,
-                 samples_root, experiment_name, folder_number, z_=None):
+                 samples_root, experiment_name, folder_number, iter_num, z_=None):
     # Prepare sample directory
     if not os.path.isdir('%s/%s' % (samples_root, experiment_name)):
         os.mkdir('%s/%s' % (samples_root, experiment_name))
@@ -978,9 +1000,9 @@ def sample_sheet(G, classes_per_sheet, num_classes, samples_per_class, parallel,
             with torch.no_grad():
                 if parallel:
                     o = nn.parallel.data_parallel(
-                        G, (z_[:classes_per_sheet], G.shared(y)))
+                        G, (z_[:classes_per_sheet], G.shared(y), iter_num))
                 else:
-                    o = G(z_[:classes_per_sheet], G.shared(y))
+                    o = G(z_[:classes_per_sheet], G.shared(y), iter_num)
 
             ims += [o.data.cpu()]
         # This line should properly unroll the images
@@ -1003,7 +1025,7 @@ def interp(x0, x1, num_midpoints):
 # interp sheet function
 # Supports full, class-wise and intra-class interpolation
 def interp_sheet(G, num_per_sheet, num_midpoints, num_classes, parallel,
-                 samples_root, experiment_name, folder_number, sheet_number=0,
+                 samples_root, experiment_name, folder_number, iter_num, sheet_number=0,
                  fix_z=False, fix_y=False, device='cuda'):
     # Prepare zs and ys
     if fix_z:  # If fix Z, only sample 1 z per row
@@ -1028,7 +1050,7 @@ def interp_sheet(G, num_per_sheet, num_midpoints, num_classes, parallel,
         zs = zs.half()
     with torch.no_grad():
         if parallel:
-            out_ims = nn.parallel.data_parallel(G, (zs, ys)).data.cpu()
+            out_ims = nn.parallel.data_parallel(G, (zs, ys, iter_num)).data.cpu()
         else:
             out_ims = G(zs, ys).data.cpu()
     interp_style = '' + ('Z' if not fix_z else '') + ('Y' if not fix_y else '')

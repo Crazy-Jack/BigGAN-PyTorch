@@ -70,6 +70,7 @@ def run(config):
     G = model.Generator(**config).to(device)
     D = model.Discriminator(**config).to(device)
     E = model.ImgEncoder(**config).to(device)
+    # E = model.Encoder(**config).to(device)
 
     # If using EMA, prepare it
     if config['ema']:
@@ -92,9 +93,7 @@ def run(config):
         D = D.half()
         # Consider automatically reducing SN_eps?
     GDE = model.G_D_E(G, D, E)
-    # print(G)
-    # print(D)
-    # print(E)
+
     print('Number of params in G: {} D: {} E: {}'.format(
         *[sum([p.data.nelement() for p in net.parameters()]) for net in [G, D, E]]))
     # Prepare state dict, which holds things like epoch # and itr #
@@ -139,9 +138,9 @@ def run(config):
     loaders, train_dataset = utils.get_data_loaders(**{**config, 'batch_size': D_batch_size,
                                         'start_itr': state_dict['itr']})
 
-    # Prepare inception metrics: FID and IS
-    get_inception_metrics = inception_utils.prepare_inception_metrics(
-        config['dataset'], config['parallel'], config['no_fid'])
+    # # Prepare inception metrics: FID and IS
+    # get_inception_metrics = inception_utils.prepare_inception_metrics(
+    #     config['dataset'], config['parallel'], config['no_fid'])
 
     # Prepare noise and randomly sampled label arrays
     # Allow for different batch sizes in G
@@ -196,7 +195,7 @@ def run(config):
                 x, y = x.to(device).half(), y.to(device)
             else:
                 x, y = x.to(device), y.to(device)
-
+            # print("x {}, y {} input".format(x.shape, y.shape))
             # gan and vae
             metrics = train(x, y)
             train_log.log(itr=int(state_dict['itr']), **metrics)
@@ -220,7 +219,7 @@ def run(config):
                     if config['ema']:
                         G_ema.eval()
                 train_fns.save_and_sample(G, D, E, G_ema, fixed_x, fixed_y_of_x, z_, y_,
-                                          state_dict, config, experiment_name)
+                                          state_dict, config, experiment_name, save_weights=config['save_weights'])
 
             # # Test every specified interval
             # if not (state_dict['itr'] % config['test_every']):
