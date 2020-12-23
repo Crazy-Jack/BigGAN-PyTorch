@@ -14,15 +14,18 @@ python ../../train.py \
 --hier --dim_z 120 --shared_dim 128 \
 --G_eval_mode \
 --G_ch 94 --D_ch 64 \
---ema --use_ema --ema_start 20000 \
+--ema --use_ema --ema_start 40000 \
 --test_every 2000 --save_every 100 --num_best_copies 5 --num_save_copies 1 --seed 0 \
 --use_multiepoch_sampler \
 --pbar tqdm \
 --inference_nosample \
---experiment_name ch64_mirrorE_sparse_spread \
+--experiment_name ch64_mirrorE_sparse_spread_noadaptive \
 --sparsity_resolution 8_16_32_64 --sparsity_ratio 1_1_1_1 \
 --save_weights \
 --encoder Resnet-18 \
 --spread_sparsity \
 --sparse_decay_rate 1e-4 \
 --resume \
+--no_adaptive_tau \
+--img_pool_size 1000 \
+--resume_buffer \

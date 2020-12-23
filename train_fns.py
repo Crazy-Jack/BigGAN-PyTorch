@@ -17,7 +17,7 @@ def dummy_training_function():
     return train
 
 
-def GAN_training_function(G, D, E, GDE, ema, state_dict, config):
+def GAN_training_function(G, D, E, GDE, ema, state_dict, config, img_pool):
     def train(x, y):
         G.optim.zero_grad()
         D.optim.zero_grad()
@@ -26,7 +26,8 @@ def GAN_training_function(G, D, E, GDE, ema, state_dict, config):
         # How many chunks to split x and y into?
         x = torch.split(x, config['batch_size'])
         y = torch.split(y, config['batch_size'])
-        # print("split - x {}; y {}".format(x[0].shape, y[0].shape))
+        # print("inside fns", x)
+        print("split - x {}".format(len(x)))
         counter = 0
 
         # Optionally toggle D and G's "require_grad"
@@ -41,9 +42,11 @@ def GAN_training_function(G, D, E, GDE, ema, state_dict, config):
             # print("---------------------- counter {} ---------------".format(counter))
             # print("x[counter] {}; y[counter] {}".format(x[counter].shape, y[counter].shape))
             for accumulation_index in range(config['num_D_accumulations']):
-                D_fake, D_real = GDE(x[counter], y[counter], state_dict['itr'], train_G=False,
+                # Cornner case for the last batch
+                if counter >= len(x):
+                    break
+                D_fake, D_real = GDE(x[counter], y[counter], state_dict['itr'], img_pool, train_G=False,
                                     split_D=config['split_D'])
-
                 # Compute components of D's loss, average them, and divide by
                 # the number of gradient accumulations
                 D_loss_real, D_loss_fake = losses.discriminator_loss( \
@@ -74,8 +77,10 @@ def GAN_training_function(G, D, E, GDE, ema, state_dict, config):
         # If accumulating gradients, loop multiple times
         counter = 0 # reset counter for data split
         for accumulation_index in range(config['num_G_accumulations']):
+            if counter >= len(x):
+                    break
             # print("---------------------- counter {} ---------------".format(counter))
-            D_fake, _, G_z, mu, log_var = GDE(x[counter], y[counter], state_dict['itr'], train_G=True, split_D=config['split_D'], return_G_z=True)
+            D_fake, _, G_z, mu, log_var = GDE(x[counter], y[counter], state_dict['itr'], img_pool, train_G=True, split_D=config['split_D'], return_G_z=True)
             G_loss = losses.generator_loss(
                 D_fake) / float(config['num_G_accumulations'])
             VAE_recon_loss = losses.vae_recon_loss(G_z, x[counter])
@@ -117,7 +122,7 @@ def GAN_training_function(G, D, E, GDE, ema, state_dict, config):
 
 
 def save_and_sample(G, D, E, G_ema, fixed_x, fixed_y, z_, y_,
-                    state_dict, config, experiment_name, save_weights):
+                    state_dict, config, experiment_name, img_pool, save_weights):
     # Use EMA G for samples or non-EMA?
     which_G = G_ema if config['ema'] and config['use_ema'] else G
 
@@ -154,12 +159,19 @@ def save_and_sample(G, D, E, G_ema, fixed_x, fixed_y, z_, y_,
             # fixed_z = fixed_z.detach()
             print("fixed_z: ", fixed_z.shape)
             print("fixed_y: ", fixed_y.shape)
+        
             fixed_Gz = nn.parallel.data_parallel(
                 which_G, (fixed_z, which_G.shared(fixed_y), int(1 / config['sparse_decay_rate']) + 100)).detach()
-            # fixed_Gz = fixed_Gz.detach()
+            
+            if (not config['no_adaptive_tau']) and (state_dict['itr'] * config['sparse_decay_rate'] < 1.1):
+                fixed_Gz_train = nn.parallel.data_parallel(
+                    which_G, (fixed_z, which_G.shared(fixed_y), state_dict['itr'])).detach()
         else:
             fixed_z, _, _ = E(fixed_x)
-            fixed_Gz = which_G(fixed_z, which_G.shared(fixed_y), int(1 / config['sparse_decay_rate']) + 100)
+            fixed_Gz = which_G(fixed_z, which_G.shared(fixed_y), int(1 / config['sparse_decay_rate']) + 100).detach()
+            if (not config['no_adaptive_tau']) and (state_dict['itr'] * config['sparse_decay_rate'] < 1.1):
+                fixed_Gz_train = which_G(fixed_z, which_G.shared(fixed_y), state_dict['itr']).detach()
+
     if not os.path.isdir('%s/%s' % (config['samples_root'], experiment_name)):
         os.mkdir('%s/%s' % (config['samples_root'], experiment_name))
     image_filename = '%s/%s/fixed_samples%d.jpg' % (config['samples_root'],
@@ -168,7 +180,14 @@ def save_and_sample(G, D, E, G_ema, fixed_x, fixed_y, z_, y_,
 
     torchvision.utils.save_image(fixed_Gz.float().cpu(), image_filename,
                                  nrow=int(fixed_Gz.shape[0] ** 0.5), normalize=True)
+    
+    if (not config['no_adaptive_tau']) and (state_dict['itr'] * config['sparse_decay_rate'] < 1.1):
+        image_filename_train = '%s/%s/fixed_samples%d_train.jpg' % (config['samples_root'],
+                                                    experiment_name,
+                                                    state_dict['itr'])
 
+        torchvision.utils.save_image(fixed_Gz_train.float().cpu(), image_filename_train,
+                                 nrow=int(fixed_Gz_train.shape[0] ** 0.5), normalize=True)
     # For now, every time we save, also save sample sheets
     utils.sample_sheet(which_G,
                        classes_per_sheet=utils.classes_per_sheet_dict[config['dataset']],
@@ -192,6 +211,10 @@ def save_and_sample(G, D, E, G_ema, fixed_x, fixed_y, z_, y_,
                            sheet_number=0,
                            fix_z=fix_z, fix_y=fix_y, device='cuda',
                            iter_num=int(1 / config['sparse_decay_rate']) + 100)
+    
+    # Save ImagePool
+    if config['img_pool_size'] != 0:
+        img_pool.save()
 
 
 

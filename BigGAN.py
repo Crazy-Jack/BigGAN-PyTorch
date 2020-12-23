@@ -75,7 +75,7 @@ class Generator(nn.Module):
                  BN_eps=1e-5, SN_eps=1e-12, G_mixed_precision=False, G_fp16=False,
                  G_init='ortho', skip_init=False, no_optim=False,
                  G_param='SN', norm_style='bn', sparsity_resolution='', sparsity_ratio='', no_sparsity=True, mask_base=1e-2,
-                 spread_sparsity=False, sparse_decay_rate=1e-4, **kwargs):
+                 sparsity_mode="spread", sparse_decay_rate=1e-4, no_adaptive_tau=False, local_reduce_factor=4, **kwargs):
         super(Generator, self).__init__()
         # Channel width mulitplier
         self.ch = G_ch
@@ -118,8 +118,10 @@ class Generator(nn.Module):
         # Sparsity 
         self.sparsity_resolution, self.sparsity_ratio = sparsity_resolution, sparsity_ratio
         self.no_sparsity = no_sparsity
-        self.spread_sparsity = spread_sparsity
+        self.sparsity_mode = sparsity_mode
         self.sparse_decay_rate = sparse_decay_rate
+        self.no_adaptive_tau = no_adaptive_tau
+        self.local_reduce_factor = local_reduce_factor
         # Architecture dict
         self.arch = G_arch(self.ch, self.attention, sparsity_resolution=self.sparsity_resolution, \
                                 sparsity_ratio=self.sparsity_ratio, no_sparsity=self.no_sparsity)[resolution]
@@ -199,12 +201,35 @@ class Generator(nn.Module):
                 if sparse_percent:
                     print('Adding sparsity layer in G at resolution %d' %
                         self.arch['resolution'][index])
-                    if not spread_sparsity:
+                    if self.sparsity_mode == "direct":
                         self.blocks[-1] += [layers.Sparsify_all(sparse_percent, self.mask_base)]
-                    else:
+                    elif self.sparsity_mode == "spread":
                         print("### Adding sparsity in a spread manner...")
                         sparse_percent = np.sqrt(sparse_percent).item()
                         self.blocks[-1] += [layers.Sparsify_ch(sparse_percent), layers.Sparsify_hw(sparse_percent)]
+                    elif self.sparsity_mode[:5] == "hyper": # for any hyper mode of sparsity
+                        print(f"### Adding sparsity in a {sparsity_mode} manner...")
+                        # sparse_percent = np.sqrt(sparse_percent).item()
+                        # self.blocks[-1] += [layers.Sparsify_ch(sparse_percent), layers.Sparsify_hypercol(sparse_percent, mode=sparsity_mode)]
+                        self.blocks[-1] += [layers.Sparsify_hypercol(sparse_percent, mode=sparsity_mode, \
+                                                ch=self.arch['out_channels'][index], which_conv=self.which_conv, \
+                                                resolution=self.arch['resolution'][index])]
+                        # adding attention layer if perform hypercolum selection
+                        print('Adding attention layer in G at resolution %d after hypercol sparsity...  ' %
+                            self.arch['resolution'][index])
+                        self.blocks[-1] += [layers.Attention(
+                            self.arch['out_channels'][index], self.which_conv)]
+
+                    elif self.sparsity_mode == 'local_modular_hyper_col':  # topk, ch, which_conv, resolution
+                        print('Adding local modular hypercolumn selection layer in G at resolution %d ... ' % 
+                            self.arch['resolution'][index])
+
+                        self.blocks[-1] += [layers.Sparsify_hypercol_local_modular(sparse_percent, \
+                                                self.arch['out_channels'][index], which_conv=self.which_conv, \
+                                                resolution=self.arch['resolution'][index], local_reduce_factor=self.local_reduce_factor)]
+                    else:
+                        raise NotImplementedError(f"Sparsity Mode Invalid: {self.sparsity_mode}")
+
         # Turn self.blocks into a ModuleList so that it's all properly registered.
         self.blocks = nn.ModuleList([nn.ModuleList(block)
                                      for block in self.blocks])
@@ -285,11 +310,14 @@ class Generator(nn.Module):
         # Loop over blocks
         for index, blocklist in enumerate(self.blocks):
             # Second inner loop in case block has multiple layers
-            for block in blocklist:
+            for block_idx, block in enumerate(blocklist):
                 # print("block: h {} ; ys[index] {}".format(h.shape, ys[index].shape))
-                if block.myid in ['sparse_ch', 'sparse_hw']:
+                if block.myid in ['sparse_ch', 'sparse_hw', 'sparse_all', 'sparse_hyper', 'local_modular_hyper_col']:
                     # decay linearly:
-                    tau = min(iter_num * self.sparse_decay_rate, 1)
+                    if self.no_adaptive_tau:
+                        tau = 1.0
+                    else:
+                        tau = min(iter_num * self.sparse_decay_rate, 1)
                     h = block(h, tau)
                 else:
                     h = block(h, ys[index])
@@ -298,10 +326,10 @@ class Generator(nn.Module):
                 # if index == 0:
                 #     h = layers.sparsify_layer(h, sparsity=sparsity, device=device)
 
-            if return_inter_activation:
-                out = h.cpu().numpy()
-                intermediates[index] = out
-                print("Get activation from block {} : {} ----------- ".format(index, out.shape))
+                if return_inter_activation:
+                    out = h.cpu()
+                    intermediates["{}-{}".format(index, block_idx)] = out
+                    print("Get activation from block {}-{} : {} ----------- ".format(index, block_idx, out.shape))
         
         # Apply batchnorm-relu-conv-tanh at output
         if return_inter_activation:
@@ -480,7 +508,7 @@ class G_D_E(nn.Module):
         self.D = D
         self.E = E 
 
-    def forward(self, x, y, iter_num, train_G=False, return_G_z=False,
+    def forward(self, x, y, iter_num, img_pool, train_G=False, return_G_z=False,
                 split_D=False, verbose=False):
         # If training G, enable grad tape
         with torch.set_grad_enabled(train_G):
@@ -496,6 +524,9 @@ class G_D_E(nn.Module):
                 print("self.G.shared(y)", self.G.shared(y).shape)
                 print("z", z.shape)
             G_z = self.G(z, self.G.shared(y), iter_num)
+            if not train_G:
+                if img_pool:
+                    G_z = img_pool.query(G_z, y) # when train discriminator, use buffered generated image to avoid mode collapes, not when train_G
             # print("G_z", G_z[0])
             # Cast as necessary
             if self.G.fp16 and not self.D.fp16:

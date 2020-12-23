@@ -19,10 +19,10 @@ python ../../train.py \
 --use_multiepoch_sampler \
 --pbar tqdm \
 --inference_nosample \
---experiment_name ch64_mirrorE_sparse_spread \
+--experiment_name ch64_mirrorE_hypercolumn_sparse_nobuffer \
 --sparsity_resolution 8_16_32_64 --sparsity_ratio 1_1_1_1 \
 --save_weights \
 --encoder Resnet-18 \
---spread_sparsity \
+--sparsity_mode hyper_col_absmax \
 --sparse_decay_rate 1e-4 \
 --resume \

@@ -211,7 +211,7 @@ def prepare_parser():
         '--split_D', action='store_true', default=False,
         help='Run D twice rather than concatenating inputs? (default: %(default)s)')
     parser.add_argument(
-        '--num_epochs', type=int, default=100,
+        '--num_epochs', type=int, default=500,
         help='Number of epochs to train for (default: %(default)s)')
     parser.add_argument(
         '--parallel', action='store_true', default=False,
@@ -244,8 +244,11 @@ def prepare_parser():
         help='Run G in eval mode (running/standing stats?) at sample/test time? '
         '(default: %(default)s)')
     parser.add_argument(
-        '--save_every', type=int, default=2000,
-        help='Save every X iterations (default: %(default)s)')
+        '--save_img_every', type=int, default=20,
+        help='Save img every X iterations (default: %(default)s)')
+    parser.add_argument(
+        '--save_model_every', type=int, default=100,
+        help='Save img every X iterations (default: %(default)s)')
     parser.add_argument(
         '--num_save_copies', type=int, default=2,
         help='How many copies to save (default: %(default)s)')
@@ -281,11 +284,18 @@ def prepare_parser():
         '--weights_root', type=str, default='weights',
         help='Default location to store weights (default: %(default)s)')
     parser.add_argument(
+        '--imgbuffer_root', type=str, default='buffer',
+        help='Default location to store weights (default: %(default)s)')
+    parser.add_argument(
         '--logs_root', type=str, default='logs',
         help='Default location to store logs (default: %(default)s)')
     parser.add_argument(
         '--samples_root', type=str, default='samples',
         help='Default location to store samples (default: %(default)s)')
+    parser.add_argument(
+        '--evals_root', type=str, default='evals',
+        help="Root for eval purpose"
+    )
     parser.add_argument(
         '--pbar', type=str, default='mine',
         help='Type of progressbar to use; one of "mine" or "tqdm" '
@@ -414,18 +424,36 @@ def prepare_parser():
         '--mask_base', type=float, default='0.0',
         help='mask base, if not 0.0, randomly sample a value between [0, mask_base] if the activation is not pass threshold, otherwise mask = 1')
     parser.add_argument(
-        '--spread_sparsity', action='store_true', default=False,
-        help='whether to use hw + ch sparsity')
+        '--sparsity_mode', type=str, default="spread",
+        help='how sparsity is constructed. See inside bigGAN init for details (direct, spread, hyper_col_mean, hyper_col_absmax')
     parser.add_argument(
         '--sparse_decay_rate', type=float, default=1e-4,
         help='sparse decay rate tau. progressively control the ratio between sparse version and original map, \
                 (sparse_map * (sparse_decay_rate * step) + original_map * (1 - sparse_decay_rate * step); only works for hw+ch sparse for now')
-
-
+    parser.add_argument(
+        '--no_adaptive_tau', action='store_true', default=False,
+        help='if true, no adaptative tau, set tau to 1 always')
+    parser.add_argument(
+        '--local_reduce_factor', type=int, default=4, help="local modular factor, the whole map is broken down by this factor into \
+                                                            small modules to recover from the sparsity"
+    )
     ### Encoder ###
     parser.add_argument(
         '--encoder', type=str, default='Resnet-50',
         help='which encoder used here')
+
+
+    ### Tricks to gain better training for 1 percent ###
+    parser.add_argument("--img_pool_size", type=int, default=0, 
+        help="img pool size, if not zero, create a replay buffer for training in order to help prevent mode collaps in GAN")
+    parser.add_argument("--resume_buffer", action='store_true',
+        help="if true, resume_buffer")
+
+
+    ### Eval stuff
+    parser.add_argument("--img_index", type=int, default=0,
+        help="index of images in a batch to see the activation")
+
     return parser
 
 # Arguments for sample.py; not presently used in train.py
@@ -578,6 +606,7 @@ class MultiEpochSampler(torch.utils.data.Sampler):
 
     def __iter__(self):
         n = len(self.data_source)
+        # print("source of n {}, self.num_epochs {}, self.batch_size {}".format(n, self.num_epochs, self.batch_size))
         # Determine number of epochs
         num_epochs = int(np.ceil((n * self.num_epochs
                                   - (self.start_itr * self.batch_size)) / float(n)))
@@ -586,6 +615,7 @@ class MultiEpochSampler(torch.utils.data.Sampler):
         # indices
         out = [torch.randperm(n)
                for epoch in range(self.num_epochs)][-num_epochs:]
+        # print("num_epochs {}, start_itr {}".format(num_epochs, self.start_itr))
         # Ignore the first start_itr % n indices of the first epoch
         out[0] = out[0][(self.start_itr * self.batch_size % n):]
         # if self.replacement:
@@ -683,7 +713,7 @@ def update_config_roots(config):
 
 # Utility to prepare root folders if they don't exist; parent folder must exist
 def prepare_root(config):
-    for key in ['weights_root', 'logs_root', 'samples_root']:
+    for key in ['weights_root', 'logs_root', 'samples_root', 'evals_root']:
         if not os.path.exists(config[key]):
             print('Making directory %s for %s...' % (config[key], key))
             os.mkdir(config[key])
@@ -1381,3 +1411,4 @@ class Adam16(Optimizer):
                 p.data = state['fp32_p'].half()
 
         return loss
+

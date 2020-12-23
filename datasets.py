@@ -130,6 +130,7 @@ class ImageFolder(data.Dataset):
         self.imgs = imgs
         self.classes = classes
         self.class_to_idx = class_to_idx
+        self.num_class = len(self.classes)
         self.transform = transform
         self.target_transform = target_transform
         self.loader = loader

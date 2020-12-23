@@ -4,7 +4,7 @@ import torch.nn.functional as F
 # DCGAN loss
 
 
-def loss_dcgan_dis(dis_fake, dis_real):
+def loss_dcgan_dis(dis_fake, dis_real, clip):
     L1 = torch.mean(F.softplus(-dis_real))
     L2 = torch.mean(F.softplus(dis_fake))
     return L1, L2

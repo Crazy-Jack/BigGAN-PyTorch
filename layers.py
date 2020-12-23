@@ -492,10 +492,20 @@ class Sparsify_hw(nn.Module):
         n, c, h, w = x.shape
         x_reshape = x.view(n, c, h * w)
         keep_top_num = max(int(self.topk * h * w), 1)
-        _, index = torch.topk(x_reshape, keep_top_num, dim=2)
+        _, index = torch.topk(x_reshape.abs(), keep_top_num, dim=2)
         mask = torch.zeros_like(x_reshape).scatter_(2, index, 1).to(device)
+        # print("mask percent: ", mask.mean().item())
+        
         sparse_x = mask * x_reshape
-        return sparse_x.view(n, c, h, w) * torch.FloatTensor([tau]).to(device) + x * torch.FloatTensor([1. - tau]).to(device) 
+        sparsity_x = 1.0 - torch.where(sparse_x == 0.0)[0].shape[0] / (n * c * h * w)
+        print("sparsity -- ({}): {}".format((n, c, h, w), sparsity_x)) ## around 9% decrease to 4% fired eventually this way
+        if tau == 1.0:
+            return sparse_x.view(n, c, h, w)
+        
+        # print("--- tau", tau)
+        tau_x = x * torch.FloatTensor([1. - tau]).to(device)
+        # print("sum of x used", tau_x.sum())
+        return sparse_x.view(n, c, h, w) * torch.FloatTensor([tau]).to(device) + tau_x
 
 
 class Sparsify_ch(nn.Module):
@@ -507,15 +517,20 @@ class Sparsify_ch(nn.Module):
     def forward(self, x, tau, device='cuda'):
         n, c, h, w = x.shape
         keep_top_num = max(int(self.topk * c), 1)
-        _, index = torch.topk(x, keep_top_num, dim=1)
+        _, index = torch.topk(x.abs(), keep_top_num, dim=1)
         mask = torch.zeros_like(x).scatter_(1, index, 1).to(device)
+        # print("mask percent: ", mask.mean().item())
         sparse_x = mask * x
-        # print("--- tau", tau)
-        return sparse_x.view(n, c, h, w) * torch.FloatTensor([tau]).to(device) + x * torch.FloatTensor([1. - tau]).to(device) 
+        if tau == 1.0:
+            return sparse_x.view(n, c, h, w)
+
+        tau_x = x * torch.FloatTensor([1. - tau]).to(device)
+        # print("sum of x used", tau_x.sum())
+        return sparse_x.view(n, c, h, w) * torch.FloatTensor([tau]).to(device) + tau_x
 
 
 
-def sparsify_layer(h, sparsity=0.1, device='cuda', mask_base=0.0):
+def sparsify_layer(h, tau, sparsity=0.1, device='cuda', mask_base=0.0):
     """Sparsify entire layer activation by sparsity level specified (within each instance)
     param: 
       - h: (N, C, H, W)
@@ -540,9 +555,12 @@ def sparsify_layer(h, sparsity=0.1, device='cuda', mask_base=0.0):
             mask = mask.to(device)
             mask[torch.where(h.abs() >= cutoff[:, None, None, None])] = 1.0
         # print("mask 1 number {} (h={})".format(mask.sum(), h.shape))
-        return mask * h
+        if tau == 1.0:
+            return mask * h
+        return mask * h * torch.FloatTensor([tau]).to(device) + h * torch.FloatTensor([1.0 - tau]).to(device)
     else:
         return h
+
 
 class Sparsify_all(nn.Module):
     """sparse modules that sparsify without distinguish channel and spatial"""
@@ -552,8 +570,249 @@ class Sparsify_all(nn.Module):
         self.sparsity = sparsity
         self.mask_base = mask_base
         self.myid = "sparse_all"
-    def forward(self, h, y):
-        return sparsify_layer(h, sparsity=self.sparsity, mask_base=self.mask_base)
+    def forward(self, h, tau):
+        return sparsify_layer(h, tau=tau, sparsity=self.sparsity, mask_base=self.mask_base)
+
+
+
+class Sparsify_hypercol(nn.Module):
+    """sparse module for hypercolumn sparsity"""
+    def __init__(self, topk, mode="hyper_col_mean", kernel_size=(5,5), which_conv=None, ch=None, resolution=None, hidden_ch=40):
+        super(Sparsify_hypercol, self).__init__()
+        self.topk = topk  # percent of the top reponse to keep
+        self.mode = mode # dictate how topk column is selected: 1) based on mean response 2) based on 
+        self.myid = "sparse_hyper"
+        self.kernel = kernel_size
+        self.hidden_ch = hidden_ch
+        
+        # use nn if mode is "hyper_col_nn":
+        if self.mode in ["hyper_col_nn", "hyper_col_nn_remap"]:
+            if which_conv:
+                self.which_conv = which_conv
+            if ch:
+                self.ch = ch # note the sparsity operation doesn't change the output channel size
+            if resolution:
+                self.resolution = resolution
+            if self.mode == "hyper_col_nn":
+                self.map_nn = self.which_conv(self.ch, 1, kernel_size=1, padding=0, bias=False)
+            if self.mode == "hyper_col_nn_remap":
+                self.reduce_map = self.which_conv(self.ch, self.hidden_ch, kernel_size=1, padding=0, bias=False)
+                self.map_nn = self.which_conv(self.hidden_ch, 1, kernel_size=1, padding=0, bias=False)
+                self.recover_map = self.which_conv(self.hidden_ch, self.ch, kernel_size=1, padding=0, bias=False)
+                # recover on the hidden space
+                self.remap_in_dim = int(self.topk * (self.resolution ** 2)) * self.hidden_ch + (self.resolution ** 2) # the topk and the position encode for selected hypercolumn
+                self.remap_linear1 = nn.Linear(self.remap_in_dim, self.remap_in_dim)
+                self.relu = nn.ReLU()
+                self.remap_linear2 = nn.Linear(self.remap_in_dim, (self.ch * self.resolution ** 2))
+
+
+    def get_selection_stats(self, x_reshape):
+        """get selection statistics
+        param:
+            - x_reshape: (n, c, h * w)
+        return: [n, h * w], topk of column is selected based on this metrics
+        """
+        if self.mode in ["hyper_col_mean", "hyper_col_center_mean"]:
+            return x_reshape.mean(1, keepdim=True)
+        elif self.mode == "hyper_col_absmax":
+            return x_reshape.abs().max(1, keepdim=True).values
+    
+    def transform(self, x):
+        """input x: [n, c, h, w]
+        output: [n, 1, h, w]
+        """
+        if self.mode == 'hyper_col_center_mean':
+            return x.mean(1, keepdim=True)
+        elif self.mode in ['hyper_col_nn', 'hyper_col_nn_remap']:
+            return self.map_nn(x)
+            
+
+    def forward(self, x, tau, device='cuda'):
+        n, c, h, w = x.shape
+        x_reshape = x.view(n, c, h * w)
+        # get topk hypercolumn index
+        if self.mode in ["hyper_col_mean", "hyper_col_absmax"]:
+            # build topk index based on mean response of the column
+            x_reshape_colstats = self.get_selection_stats(x_reshape) # [n, 1, h * w]
+            keep_top_num = max(int(self.topk * h * w), 1)
+            _, index = torch.topk(x_reshape_colstats, keep_top_num, dim=2)
+            mask = torch.zeros_like(x_reshape_colstats).scatter_(1, index, 1).to(device)
+        elif self.mode in ["hyper_col_center_mean"]:
+            with torch.no_grad():
+                transformed_x = self.transform(x) # calculate the hypercolumn statistics based on non-linear/linear transform [n, 1, h, w]
+                unfolded_x = F.unfold(transformed_x, self.kernel) # n, L, k1*k2*1
+                keep_top_num = max(int(self.topk * unfolded_x.shape[2]), 1)
+                _, index = torch.topk(unfolded_x, keep_top_num, dim=2)
+                mask = torch.zeros_like(unfolded_x).scatter_(2, index, 1) 
+                mask = F.fold(mask, (h, w), self.kernel) # n, 1, h, w
+                mask = torch.clamp(mask, min=0.0, max=1.0) # n, L, k1*k2*1
+                mask = mask.view(n, 1, h * w).detach().to(device)
+        
+        if self.mode not in ["hyper_col_nn", "hyper_col_nn_local", "hyper_col_nn_remap"]:
+            sparse_x = mask * x_reshape # use None for broadcast the column dim
+            with torch.no_grad():
+                sparsity_x = 1.0 - torch.where(sparse_x == 0.0)[0].shape[0] / (n * c * h * w)
+                # print("sparsity -- ({}): {}".format((n, c, h, w), sparsity_x)) ## around 9% decrease to 4% fired eventually this way
+            if tau == 1.0:
+                return sparse_x.view(n, c, h, w)
+            
+            # print("--- tau", tau)
+            tau_x = x * torch.FloatTensor([1. - tau]).to(device)
+            # print("sum of x used", tau_x.sum())
+            return sparse_x.view(n, c, h, w) * torch.FloatTensor([tau]).to(device) + tau_x
+
+
+        if self.mode in ["hyper_col_nn", "hyper_col_nn_remap"]:
+            transformed_x = self.transform(x) # use 1x1 conv to transform to [n, 1, h, w]
+            transformed_x_exp = torch.exp(transformed_x)
+            transformed_x_normed = transformed_x_exp / transformed_x_exp.sum((2, 3), keepdim=True) # softmax [n, 1, h, w]
+            # build mask
+            keep_top_num = max(int(self.topk * h * w), 1)
+            _, index = torch.topk(transformed_x_normed.reshape(n, 1, h * w), keep_top_num, dim=2)
+            mask = torch.zeros((n, 1, h * w)).to(device).scatter_(2, index, 1.0).view(n, 1, h, w) # [n, 1, h, w]
+            # straight-through mask
+            st_mask = (mask - transformed_x_normed).detach() + transformed_x_normed
+            out = st_mask * x # [n, c, h, w]
+            return out
+            
+            if self.mode == "hyper_col_nn_remap":
+                non_zeros_idx = torch.where(mask == 1.0)
+                out = out[non_zeros_idx[0], :, non_zeros_idx[2], non_zeros_idx[3]] # [n, c, i, i]
+                out = out.reshape(n, int(self.topk * (self.resolution ** 2)) * self.ch)  # [n, int(self.topk * (self.resolution ** 2)) * self.ch]
+                # concate position encoding
+
+
+
+            return out
+        
+        elif self.mode == "hyper_col_nn_local":
+            transformed_x = self.transform(x) # use 1x1 conv to transform to [n, 1, h, w]
+            transformed_x_exp = torch.exp(transformed_x)
+            transformed_x_normed = transformed_x_exp / transformed_x_exp.sum((2, 3), keepdim=True) # softmax [n, 1, h, w]
+            # im2col to build local sparse mask
+            unfolded_x = F.unfold(transformed_x, self.kernel) # n, L, k1*k2*1
+            keep_top_num = max(int(self.topk * unfolded_x.shape[2]), 1)
+            _, index = torch.topk(unfolded_x, keep_top_num, dim=2)
+            mask = torch.zeros_like(unfolded_x).scatter_(2, index, 1) 
+            mask = F.fold(mask, (h, w), self.kernel) # n, 1, h, w
+            mask = torch.clamp(mask, min=0.0, max=1.0) # n, L, k1*k2*1
+            mask = mask.view(n, 1, h * w).detach().to(device)
+
+            return out
+
+
+
+class LocalLinearModule(nn.Sequential):
+    def __init__(self, indim, outdim, hidden_dim):
+        super(LocalLinearModule, self).__init__(
+            nn.Linear(indim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, outdim)
+        )
+
+class LocalConvModule(nn.Module):
+    def __init__(self, local_topk_num, which_conv, in_ch, out_ch=1, k=1, p=0, bias=False):
+        super(LocalConvModule, self).__init__()
+        self.conv = which_conv(in_ch, out_ch, kernel_size=k, padding=p, bias=bias)
+        self.local_topk_num = local_topk_num
+
+    def forward(self, x, device='cuda'):
+        """
+        x: [n, c, local_h, local_w] 
+        output: [n, local_in_dim], [n, 1, h, w], [n, c, local_h, local_w]
+        """
+        n, c, local_h, local_w = x.shape
+        transformed_x = self.conv(x)
+        transformed_x_exp = torch.exp(transformed_x)
+        transformed_x_normed = transformed_x_exp / transformed_x_exp.sum((2, 3), keepdim=True)
+        # build mask
+        _, index = torch.topk(transformed_x_normed.reshape(n, 1, local_h * local_w), self.local_topk_num, dim=2)
+        mask = torch.zeros((n, 1, local_h * local_w)).to(device).scatter_(2, index, 1.0).view(n, 1, local_h, local_w) # [n, 1, h, w]
+        # straight-through mask
+        st_mask = (mask - transformed_x_normed).detach() + transformed_x_normed
+        out = st_mask * x # [n, c, local_h, local_w]
+        
+        # extract only the selected hypercolumn
+        select_hc_index = torch.where(mask == torch.FloatTensor([1.0]).to(device))
+        out_efficient = out[select_hc_index[0], :, select_hc_index[2], select_hc_index[3]].view(n, -1) # n, local_topk_num * c, do a split local_topk_num if you want to see each vc
+        # concate with mask
+        # print("out_efficient {}; st_mask.view(n, -1) {}".format(out_efficient.shape, st_mask.view(n, -1).shape))
+        concat_out = torch.cat([out_efficient, st_mask.view(n, -1)], dim=1) # n, local_in_dim
+
+        return concat_out, st_mask, out
+
+
+        
+
+
+class Sparsify_hypercol_local_modular(nn.Module):
+    def __init__(self, topk, ch, which_conv, resolution, local_reduce_factor=4, local_hidden_dim=-1, channel_reduce_factor=10):
+        super(Sparsify_hypercol_local_modular, self).__init__()
+        self.topk = topk  # percent of the top reponse to keep
+        self.myid = "local_modular_hyper_col"
+        self.local_reduce_factor = local_reduce_factor # each axis of h and w are devided by local_reduce_factor equally
+        assert int(resolution / self.local_reduce_factor) == resolution / self.local_reduce_factor, f"local_reduce_factor should be a factor of resolution {local_reduce_factor}"
+
+        # calculate statistics
+        self.ch = ch
+        self.channel_reduce_factor = channel_reduce_factor
+        self.h = self.w = resolution 
+        self.local_h = int(self.h / self.local_reduce_factor)
+        self.local_w = int(self.w / self.local_reduce_factor)
+        ## topk 
+        self.local_topk_num = max(1, int(self.local_h * self.local_w * self.topk))
+        ## num of local block
+        self.num_block = self.local_reduce_factor ** 2
+        ## nn arch one hidden layer with relu activation (see class LocalModule)
+        self.local_indim = self.local_topk_num * self.ch + self.local_h * self.local_w
+        print("local_indim {}, local_topk_num {}; ch {}, local_h {}, local_w {}".format(self.local_indim,self.local_topk_num, self.ch, self.local_h, self.local_w))
+        self.local_hidden_dim = self.local_indim if local_hidden_dim == -1 else local_hidden_dim
+        self.local_out_channel = (self.ch // self.channel_reduce_factor + 1)
+        self.local_outdim = self.local_h * self.local_w * self.local_out_channel
+        print(f"Define Local Modular Network: indim {self.local_indim} -- hidden {self.local_hidden_dim} -- outdim {self.local_outdim} -- out channel {self.local_out_channel}")
+
+        # define modular network
+        self.which_conv = which_conv
+        self.recover_module = LocalLinearModule(self.local_indim, self.local_outdim, self.local_hidden_dim)
+        self.list_of_sparsify_modules = nn.ModuleList([LocalConvModule(self.local_topk_num, self.which_conv, self.ch, out_ch=1, k=1, p=0, bias=False) \
+                                                        for i in range(self.num_block)])
+        self.out_conv = which_conv(self.local_out_channel, self.ch, kernel_size=1, padding=0, bias=False)
+        
+        print("check1--------------------")
+        
+    def forward(self, x, tau, device='cuda'):
+        """sparsify locally, and then recover local sparsified hypercolumn into full feature map by multiple modular neural network
+        param: 
+            - x: [n, c, h, w] full feature map
+        return:
+            - recovered_x : [n, c, h, w] recovered full feature map
+        """
+        # segment locally (grid manner)
+        list_of_activation = []
+        # print("inside x {}; local_reduce_factor {}".format(x.shape, self.local_reduce_factor))
+        for split_h in torch.split(x, self.local_h, dim=2):
+            for split_hw in torch.split(split_h, self.local_w, dim=3):
+                # print("inside forward split_hw", split_hw.shape)
+                list_of_activation.append(split_hw) # [n, c, local_h, local_w]
+         
+        # sparsify and recover
+        list_of_post_recover = []
+        for i, local_activation in enumerate(list_of_activation): # [n, c, local_h, local_w]
+            local_activation, _, _ = self.list_of_sparsify_modules[i](local_activation) # sparsified and reshaped (n, local_in_dim)
+            local_activation = self.recover_module(local_activation).view(-1, self.local_out_channel, self.local_h, self.local_w) # [n, local_out_channel, local_h, local_w]
+            # print("local_activation after recover reshape", local_activation.shape)
+            list_of_post_recover.append(local_activation)
+        
+        
+        # concate the grid
+        x = torch.cat(torch.cat(list_of_post_recover, dim=3).chunk(self.local_reduce_factor, dim=3), dim=2) # n, local_out_channel, h, w
+
+        # increase channel back to normal channel 
+        x = self.out_conv(x)
+
+        return x
+
+
 
 
 
