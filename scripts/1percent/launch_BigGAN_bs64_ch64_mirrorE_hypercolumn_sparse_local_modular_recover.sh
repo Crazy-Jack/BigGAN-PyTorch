@@ -25,4 +25,5 @@ python ../../train.py \
 --sparsity_mode local_modular_hyper_col \
 --sparse_decay_rate 1e-3 \
 --no_adaptive_tau \
+--img_index 31 \
 --resume \

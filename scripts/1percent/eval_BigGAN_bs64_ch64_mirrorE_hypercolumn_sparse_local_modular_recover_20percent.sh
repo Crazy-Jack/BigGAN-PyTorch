@@ -1,7 +1,7 @@
 #!/bin/bash
-python ../../train.py \
+python ../../eval_single_vc.py \
 --data_root /user_data/tianqinl/Dataset \
---dataset Mysmall_128 --parallel --shuffle  --num_workers 32 --batch_size 64 \
+--dataset Mysmall_128 --shuffle  --num_workers 32 --batch_size 64 \
 --num_G_accumulations 3 --num_D_accumulations 3 \
 --num_D_steps 1 --G_lr 1e-4 --D_lr 4e-4 --E_lr 1e-4 --D_B2 0.999 --G_B2 0.999 --E_B2 0.999 \
 --lambda_vae_kld 1e-3 --lambda_vae_recon 1 \
@@ -18,12 +18,15 @@ python ../../train.py \
 --use_multiepoch_sampler \
 --pbar tqdm \
 --inference_nosample \
---experiment_name ch64_mirrorE_hypercolumn_sparse_local_modular_recover_4percent \
---sparsity_resolution 8_16_32_64 --sparsity_ratio 4_4_4_4 \
---save_weights \
+--experiment_name ch64_mirrorE_hypercolumn_sparse_local_modular_recover_17k \
+--sparsity_resolution 8_16_32_64 --sparsity_ratio 20_20_20_20 \
 --encoder Resnet-18 \
 --sparsity_mode local_modular_hyper_col \
 --sparse_decay_rate 1e-3 \
 --no_adaptive_tau \
 --img_index 31 \
 --resume \
+--test_layer $2 \
+--test_target_block $1 \
+--select_index $3 \
+# --parallel \

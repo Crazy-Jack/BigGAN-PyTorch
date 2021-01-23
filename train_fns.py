@@ -1,14 +1,17 @@
 ''' train_fns.py
 Functions for the main loop of training different conditional image models
 '''
+import os
+
 import torch
 import torch.nn as nn
 import torchvision
-import os
+import torch.nn.functional as F
+
 
 import utils
 import losses
-
+from plot_inter_activation import plot_channel_activation
 
 # Dummy training function for debugging
 def dummy_training_function():
@@ -80,13 +83,24 @@ def GAN_training_function(G, D, E, GDE, ema, state_dict, config, img_pool):
             if counter >= len(x):
                     break
             # print("---------------------- counter {} ---------------".format(counter))
-            D_fake, _, G_z, mu, log_var = GDE(x[counter], y[counter], state_dict['itr'], img_pool, train_G=True, split_D=config['split_D'], return_G_z=True)
+            D_fake, _, G_z, mu, log_var, weights_TTs, mask_x_all = GDE(x[counter], y[counter], state_dict['itr'], img_pool, train_G=True, split_D=config['split_D'], return_G_z=True)
             G_loss = losses.generator_loss(
                 D_fake) / float(config['num_G_accumulations'])
             VAE_recon_loss = losses.vae_recon_loss(G_z, x[counter])
             VAE_kld_loss = losses.vae_kld_loss(mu, log_var, config['clip'])
-            GE_loss = G_loss + VAE_recon_loss * config['lambda_vae_recon'] + VAE_kld_loss * config['lambda_vae_kld']
-            print("GE_loss {}, Gloss {}; VAE_recon_loss {}; VAE_kld_loss {}".format(GE_loss.item(), G_loss.item(), VAE_recon_loss.item(), VAE_kld_loss.item()))
+            GE_loss = G_loss + VAE_recon_loss * config['lambda_vae_recon'] + VAE_kld_loss * config['lambda_vae_kld'] + \
+                            weights_TTs.mean() * config['lambda_spatial_transform_weights']
+                            
+            log_loss_str = f"GE_loss {GE_loss.item()}; VAE_recon_loss {VAE_recon_loss.item()}; VAE_kld_loss {VAE_kld_loss.item()}; weights_TTs {weights_TTs.mean().item()}; "
+            
+            # only if mask is not None
+            if mask_x_all[0] is not None:
+                mask_x_loss = losses.mask_loss(mask_x_all, complement_weight=config['lambda_mask_loss_weights_complement'], contrastive_weight=config['lambda_mask_loss_weights_contrast'])
+                GE_loss += mask_x_loss
+                log_loss_str += f"mask_loss {mask_x_loss} "
+            # print(f"weights_TTs {weights_TTs.item()}")
+            # logout str
+            print(log_loss_str)
             GE_loss.backward()
             counter += 1
 
@@ -160,57 +174,106 @@ def save_and_sample(G, D, E, G_ema, fixed_x, fixed_y, z_, y_,
             print("fixed_z: ", fixed_z.shape)
             print("fixed_y: ", fixed_y.shape)
         
-            fixed_Gz = nn.parallel.data_parallel(
-                which_G, (fixed_z, which_G.shared(fixed_y), int(1 / config['sparse_decay_rate']) + 100)).detach()
-            
-            if (not config['no_adaptive_tau']) and (state_dict['itr'] * config['sparse_decay_rate'] < 1.1):
-                fixed_Gz_train = nn.parallel.data_parallel(
-                    which_G, (fixed_z, which_G.shared(fixed_y), state_dict['itr'])).detach()
+            # fixed_Gz = nn.parallel.data_parallel(
+            #     which_G, (fixed_z, which_G.shared(fixed_y), int(1 / config['sparse_decay_rate']) + 100, False))
+            # # detach
+            # fixed_Gz = fixed_Gz.detach()
+            output = nn.parallel.data_parallel(
+                    which_G, (fixed_z, which_G.shared(fixed_y), state_dict['itr']))
+            # if (not config['no_adaptive_tau']) and (state_dict['itr'] * config['sparse_decay_rate'] < 1.1):
+            #     fixed_Gz_train = nn.parallel.data_parallel(
+            #         which_G, (fixed_z, which_G.shared(fixed_y), state_dict['itr'])).detach()
+            if type(output) == tuple:
+                fixed_Gz = output[0].detach() 
+                mask_x_all = [item.detach() for item in output[2]] # [[n, k, h, w],...,]
+            else:
+                fixed_Gz = output.detach() 
         else:
             fixed_z, _, _ = E(fixed_x)
-            fixed_Gz = which_G(fixed_z, which_G.shared(fixed_y), int(1 / config['sparse_decay_rate']) + 100).detach()
+            fixed_Gz, intermed_activation = which_G(fixed_z, which_G.shared(fixed_y), int(1 / config['sparse_decay_rate']) + 100, True)
             if (not config['no_adaptive_tau']) and (state_dict['itr'] * config['sparse_decay_rate'] < 1.1):
-                fixed_Gz_train = which_G(fixed_z, which_G.shared(fixed_y), state_dict['itr']).detach()
-
-    if not os.path.isdir('%s/%s' % (config['samples_root'], experiment_name)):
-        os.mkdir('%s/%s' % (config['samples_root'], experiment_name))
-    image_filename = '%s/%s/fixed_samples%d.jpg' % (config['samples_root'],
-                                                    experiment_name,
-                                                    state_dict['itr'])
-
-    torchvision.utils.save_image(fixed_Gz.float().cpu(), image_filename,
-                                 nrow=int(fixed_Gz.shape[0] ** 0.5), normalize=True)
+                fixed_Gz_train = which_G(fixed_z, which_G.shared(fixed_y), state_dict['itr'])
+            # detach
+            fixed_Gz = fixed_Gz.detach().float().cpu()
     
-    if (not config['no_adaptive_tau']) and (state_dict['itr'] * config['sparse_decay_rate'] < 1.1):
-        image_filename_train = '%s/%s/fixed_samples%d_train.jpg' % (config['samples_root'],
-                                                    experiment_name,
-                                                    state_dict['itr'])
+    
 
-        torchvision.utils.save_image(fixed_Gz_train.float().cpu(), image_filename_train,
-                                 nrow=int(fixed_Gz_train.shape[0] ** 0.5), normalize=True)
-    # For now, every time we save, also save sample sheets
-    utils.sample_sheet(which_G,
-                       classes_per_sheet=utils.classes_per_sheet_dict[config['dataset']],
-                       num_classes=config['n_classes'],
-                       samples_per_class=10, parallel=config['parallel'],
-                       samples_root=config['samples_root'],
-                       experiment_name=experiment_name,
-                       folder_number=state_dict['itr'],
-                       z_=z_,
-                       iter_num=int(1 / config['sparse_decay_rate']) + 100)
-    # Also save interp sheets
-    for fix_z, fix_y in zip([False, False, True], [False, True, False]):
-        utils.interp_sheet(which_G,
-                           num_per_sheet=16,
-                           num_midpoints=8,
-                           num_classes=config['n_classes'],
-                           parallel=config['parallel'],
-                           samples_root=config['samples_root'],
-                           experiment_name=experiment_name,
-                           folder_number=state_dict['itr'],
-                           sheet_number=0,
-                           fix_z=fix_z, fix_y=fix_y, device='cuda',
-                           iter_num=int(1 / config['sparse_decay_rate']) + 100)
+    
+    n, c, h, w = fixed_Gz.shape
+    # log masks 
+    save_dir = '%s/%s/%s' % (config['samples_root'], experiment_name, state_dict['itr'])
+    os.makedirs(save_dir, exist_ok=True)
+    image_filename = save_dir + '/fixed_samples%d.jpg' % (state_dict['itr'])
+
+    torchvision.utils.save_image(fixed_Gz, image_filename,
+                                 nrow=int(fixed_Gz.shape[0] ** 0.5), normalize=True)
+
+    for layers in range(len(mask_x_all)):
+        layer_map_name = os.path.join(save_dir, f"layer_{layers}_mask.jpg")
+        mask_i = mask_x_all[layers].float().cpu() # [n, k, h_m, w_m]
+        n, k, h, w = mask_i.shape
+        # mask_i dot product
+        mask_i_TT = torch.matmul(mask_i.view(n, k, -1), torch.transpose(mask_i.view(n, k, -1), 1, 2)) # n, k, k
+        mask_i_TT = mask_i_TT.unsqueeze(1).repeat(1, 3, 1, 1) # n, 3, k, k
+        cov_name = os.path.join(save_dir, f"layer_{layers}_mask_cov.jpg")
+        torchvision.utils.save_image(mask_i_TT, cov_name, nrow=int(fixed_Gz.shape[0] ** 0.5), normalize=True)
+        print(f"saved {cov_name}...")
+        # # upsample latent map to real map
+        # assert h % h_m == 0, f"mask {h_m}x{h_m} is not a factor of h {h}x{h}"
+        # scale_factor = h // h_m
+        # mask_i = F.interpolate(mask_i, scale_factor=scale_factor) # n, k, h, w
+
+        mask_sum = mask_i.sum(1, keepdim=True).repeat(1, 3, 1, 1) # n, 3, h, w
+        
+        mask_i = mask_i.view(n, k, 1, h, w).repeat(1, 1, 3, 1, 1) # n, k, 3, h, w
+
+        
+        
+        # print(f"fixed_Gz {fixed_Gz.unsqueeze(1).shape}")
+        print(f"mask_sum { mask_sum.unsqueeze(1).shape}")
+        print(f"mask_i {mask_i.shape}")
+        # mask_img = torch.cat([fixed_Gz.float().cpu().unsqueeze(1), mask_sum.unsqueeze(1), mask_i], dim=1) # n, k+2, 3, h, w
+        mask_img = torch.cat([mask_sum.unsqueeze(1), mask_i], dim=1) # n, k+2, 3, h, w
+        torchvision.utils.save_image(mask_img.view(-1, 3, h, w), layer_map_name, nrow=k+1, normalize=True)
+        
+        # TODO: why the mask looks all the same for every images? Is the latent code all the same? for different n? should you use vae? 
+
+
+
+    
+    # if (not config['no_adaptive_tau']) and (state_dict['itr'] * config['sparse_decay_rate'] < 1.1):
+    #     image_filename_train = '%s/%s/fixed_samples%d_train.jpg' % (config['samples_root'],
+    #                                                 experiment_name,
+    #                                                 state_dict['itr'])
+
+    #     torchvision.utils.save_image(fixed_Gz_train.float().cpu(), image_filename_train,
+    #                              nrow=int(fixed_Gz_train.shape[0] ** 0.5), normalize=True)
+    # # For now, every time we save, also save sample sheets
+    # utils.sample_sheet(which_G,
+    #                    classes_per_sheet=utils.classes_per_sheet_dict[config['dataset']],
+    #                    num_classes=config['n_classes'],
+    #                    samples_per_class=10, parallel=config['parallel'],
+    #                    samples_root=config['samples_root'],
+    #                    experiment_name=experiment_name,
+    #                    folder_number=state_dict['itr'],
+    #                    z_=z_,
+    #                    iter_num=int(1 / config['sparse_decay_rate']) + 100)
+    # # Also save interp sheets
+    # for fix_z, fix_y in zip([False, False, True], [False, True, False]):
+    #     utils.interp_sheet(which_G,
+    #                        num_per_sheet=16,
+    #                        num_midpoints=8,
+    #                        num_classes=config['n_classes'],
+    #                        parallel=config['parallel'],
+    #                        samples_root=config['samples_root'],
+    #                        experiment_name=experiment_name,
+    #                        folder_number=state_dict['itr'],
+    #                        sheet_number=0,
+    #                        fix_z=fix_z, fix_y=fix_y, device='cuda',
+    #                        iter_num=int(1 / config['sparse_decay_rate']) + 100)
+
+    # plot the intermediate layer activation
+    # plot_channel_activation(intermed_activation, config['img_index'], fixed_Gz[config['img_index']], experiment_name, config, state_dict, config['samples_root'])
     
     # Save ImagePool
     if config['img_pool_size'] != 0:

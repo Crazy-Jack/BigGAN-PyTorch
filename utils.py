@@ -136,6 +136,18 @@ def prepare_parser():
         '--lambda_vae_kld', type=float, default=1e-4,
         help='vae KLD weight '
         '(default: %(default)s)')
+    parser.add_argument(
+        '--lambda_spatial_transform_weights', type=float, default=1,
+        help="weight for weight spatial transformation indepedent"
+    )
+    parser.add_argument(
+        '--lambda_mask_loss_weights_complement', type=float, default=1,
+        help="weight for regularizing the mask for complementation"
+    )
+    parser.add_argument(
+        '--lambda_mask_loss_weights_contrast', type=float, default=1,
+        help="weight for regularizing the mask for contrastive"
+    )
 
     ### Model init stuff ###
     parser.add_argument(
@@ -437,6 +449,26 @@ def prepare_parser():
         '--local_reduce_factor', type=int, default=4, help="local modular factor, the whole map is broken down by this factor into \
                                                             small modules to recover from the sparsity"
     )
+
+    parser.add_argument(
+        '--test_layer', type=int, default=-1,
+        help="if >=0, it specifies which layer to test the vc"
+    )
+    parser.add_argument(
+        '--test_target_block', type=str, default="", 
+        help="if >=0, it specifies which spatial block of vc will be test"
+    )
+
+    parser.add_argument(
+        '--select_index', type=int, default=-1,
+        help="if -1, select the top 1 vc, otherwise select the vc according to this index"
+    )
+
+    parser.add_argument(
+        '--gumbel_temperature', type=float, default=1.0,
+        help="gumbel_initial temperature, will be learnt by backprop"
+    )
+    
     ### Encoder ###
     parser.add_argument(
         '--encoder', type=str, default='Resnet-50',
@@ -451,7 +483,7 @@ def prepare_parser():
 
 
     ### Eval stuff
-    parser.add_argument("--img_index", type=int, default=0,
+    parser.add_argument("--img_index", type=int, default=31,
         help="index of images in a batch to see the activation")
 
     return parser

@@ -1,6 +1,8 @@
 ''' Layers
     This file contains various layers for the BigGAN models.
 '''
+import functools
+
 import numpy as np
 import torch
 import torch.nn as nn
@@ -8,9 +10,11 @@ from torch.nn import init
 import torch.optim as optim
 import torch.nn.functional as F
 from torch.nn import Parameter as P
+from torch.autograd import Variable
 
 from sync_batchnorm import SynchronizedBatchNorm2d as SyncBN2d
 
+from layers_new import *
 
 # Projection of x onto y
 def proj(x, y):
@@ -172,9 +176,9 @@ class Attention(nn.Module):
         phi = F.max_pool2d(self.phi(x), [2, 2])
         g = F.max_pool2d(self.g(x), [2, 2])
         # Perform reshapes
-        theta = theta.view(-1, self. ch // 8, x.shape[2] * x.shape[3])
-        phi = phi.view(-1, self. ch // 8, x.shape[2] * x.shape[3] // 4)
-        g = g.view(-1, self. ch // 2, x.shape[2] * x.shape[3] // 4)
+        theta = theta.view(-1, self.ch // 8, x.shape[2] * x.shape[3])
+        phi = phi.view(-1, self.ch // 8, x.shape[2] * x.shape[3] // 4)
+        g = g.view(-1, self.ch // 2, x.shape[2] * x.shape[3] // 4)
         # Matmul and softmax to get attention maps
         beta = F.softmax(torch.bmm(theta.transpose(1, 2), phi), -1)
         # Attention map times g path
@@ -711,12 +715,13 @@ class LocalLinearModule(nn.Sequential):
         )
 
 class LocalConvModule(nn.Module):
-    def __init__(self, local_topk_num, which_conv, in_ch, out_ch=1, k=1, p=0, bias=False):
+    def __init__(self, local_indim, local_topk_num, which_conv, in_ch, out_ch=1, k=1, p=0, bias=False):
         super(LocalConvModule, self).__init__()
         self.conv = which_conv(in_ch, out_ch, kernel_size=k, padding=p, bias=bias)
         self.local_topk_num = local_topk_num
+        self.local_indim = local_indim
 
-    def forward(self, x, device='cuda'):
+    def forward(self, x, device='cuda', top_vc=None, activate=True, select_index=-1):
         """
         x: [n, c, local_h, local_w] 
         output: [n, local_in_dim], [n, 1, h, w], [n, c, local_h, local_w]
@@ -726,18 +731,61 @@ class LocalConvModule(nn.Module):
         transformed_x_exp = torch.exp(transformed_x)
         transformed_x_normed = transformed_x_exp / transformed_x_exp.sum((2, 3), keepdim=True)
         # build mask
-        _, index = torch.topk(transformed_x_normed.reshape(n, 1, local_h * local_w), self.local_topk_num, dim=2)
-        mask = torch.zeros((n, 1, local_h * local_w)).to(device).scatter_(2, index, 1.0).view(n, 1, local_h, local_w) # [n, 1, h, w]
-        # straight-through mask
-        st_mask = (mask - transformed_x_normed).detach() + transformed_x_normed
-        out = st_mask * x # [n, c, local_h, local_w]
-        
-        # extract only the selected hypercolumn
-        select_hc_index = torch.where(mask == torch.FloatTensor([1.0]).to(device))
-        out_efficient = out[select_hc_index[0], :, select_hc_index[2], select_hc_index[3]].view(n, -1) # n, local_topk_num * c, do a split local_topk_num if you want to see each vc
-        # concate with mask
-        # print("out_efficient {}; st_mask.view(n, -1) {}".format(out_efficient.shape, st_mask.view(n, -1).shape))
-        concat_out = torch.cat([out_efficient, st_mask.view(n, -1)], dim=1) # n, local_in_dim
+        if not activate:
+            # used for non target block during testing
+            assert self.training == False, "should activate this local Conv mask block during training (self.training is {} now).".format(self.training)
+            # build fake zeros activations
+            concat_out = torch.zeros((n, self.local_indim)).to(device)
+            return concat_out, None, None
+        elif top_vc:
+            # !!! only used for testing
+            print("1 vc mask !! ")
+            if select_index == -1:
+                _, index = torch.topk(transformed_x_normed.reshape(n, 1, local_h * local_w), 1, dim=2)
+                print("select top 1 vc (out of {})".format(self.local_topk_num))
+            else:
+                _, index = torch.topk(transformed_x_normed.reshape(n, 1, local_h * local_w), self.local_topk_num, dim=2)
+                print("before: index", index.shape)
+                select_index = min(max(select_index, 0), self.local_topk_num-1)
+                print(f"selected vc index {select_index} (totoal {self.local_topk_num})")
+                index = index[:, :, select_index:select_index+1]
+                print("after: index", index.shape)
+            mask = torch.zeros((n, 1, local_h * local_w)).to(device).scatter_(2, index, 1.0).view(n, 1, local_h, local_w) # [n, 1, h, w]
+            # straight-through mask
+            st_mask = (mask - transformed_x_normed).detach() + transformed_x_normed
+            out = st_mask * x # [n, c, local_h, local_w]
+            
+            # extract only the selected hypercolumn
+            select_hc_index = torch.where(mask == torch.FloatTensor([1.0]).to(device))
+            out_efficient = out[select_hc_index[0], :, select_hc_index[2], select_hc_index[3]].view(n, -1) # n, 1 * c, do a split local_topk_num if you want to see each vc
+            
+            # add zeros into out_efficient to make it n, 1 * c
+            zumbe = torch.zeros((n, (self.local_topk_num - 1) * c)).to(device)
+            out_efficient = torch.cat([out_efficient, zumbe], dim=1)
+
+            concat_out = torch.cat([out_efficient, st_mask.view(n, -1)], dim=1) # n, local_in_dim
+            print('postion encode')
+            messup = torch.zeros_like(st_mask.view(n, -1)).to(device)
+            messup[:,1] = 1
+            concat_out = torch.cat([out_efficient, messup], dim=1)
+            print(st_mask.view(n, -1).mean(0))
+        else:
+            # used when training, topk mask
+            _, index = torch.topk(transformed_x_normed.reshape(n, 1, local_h * local_w), self.local_topk_num, dim=2)
+            mask = torch.zeros((n, 1, local_h * local_w)).to(device).scatter_(2, index, 1.0).view(n, 1, local_h, local_w) # [n, 1, h, w]
+            # straight-through mask
+            st_mask = (mask - transformed_x_normed).detach() + transformed_x_normed
+            out = st_mask * x # [n, c, local_h, local_w]
+            
+            # extract only the selected hypercolumn
+            select_hc_index = torch.where(mask == torch.FloatTensor([1.0]).to(device))
+            out_efficient = out[select_hc_index[0], :, select_hc_index[2], select_hc_index[3]].view(n, -1) # n, local_topk_num * c, do a split local_topk_num if you want to see each vc
+            # concate with mask
+            # print("out_efficient {}; st_mask.view(n, -1) {}".format(out_efficient.shape, st_mask.view(n, -1).shape))
+            concat_out = torch.cat([out_efficient, st_mask.view(n, -1)], dim=1) # n, local_in_dim
+            
+            
+        assert self.local_indim == concat_out.shape[1], f"output dim ({concat_out.shape[1]}) mismatches with the desired local_in_dim {self.local_indim}"
 
         return concat_out, st_mask, out
 
@@ -774,13 +822,13 @@ class Sparsify_hypercol_local_modular(nn.Module):
         # define modular network
         self.which_conv = which_conv
         self.recover_module = LocalLinearModule(self.local_indim, self.local_outdim, self.local_hidden_dim)
-        self.list_of_sparsify_modules = nn.ModuleList([LocalConvModule(self.local_topk_num, self.which_conv, self.ch, out_ch=1, k=1, p=0, bias=False) \
+        self.list_of_sparsify_modules = nn.ModuleList([LocalConvModule(self.local_indim, self.local_topk_num, self.which_conv, self.ch, out_ch=1, k=1, p=0, bias=False) \
                                                         for i in range(self.num_block)])
         self.out_conv = which_conv(self.local_out_channel, self.ch, kernel_size=1, padding=0, bias=False)
         
         print("check1--------------------")
         
-    def forward(self, x, tau, device='cuda'):
+    def forward(self, x, test_top1_blockindex=None, select_index=-1, device='cuda'):
         """sparsify locally, and then recover local sparsified hypercolumn into full feature map by multiple modular neural network
         param: 
             - x: [n, c, h, w] full feature map
@@ -795,10 +843,31 @@ class Sparsify_hypercol_local_modular(nn.Module):
                 # print("inside forward split_hw", split_hw.shape)
                 list_of_activation.append(split_hw) # [n, c, local_h, local_w]
          
+        if test_top1_blockindex:
+            print("test_top1_blockindex {} in {}-{}".format(test_top1_blockindex, self.h, self.h))
+            # during testing
+            test_top1_block_index_ = test_top1_blockindex[0] * self.local_reduce_factor + test_top1_blockindex[1]
+
         # sparsify and recover
         list_of_post_recover = []
         for i, local_activation in enumerate(list_of_activation): # [n, c, local_h, local_w]
-            local_activation, _, _ = self.list_of_sparsify_modules[i](local_activation) # sparsified and reshaped (n, local_in_dim)
+            # specify testing block
+            if (not self.training) and test_top1_blockindex:
+                if i == test_top1_block_index_:
+                    print(f"block {i} is tested")
+                    activate = True 
+                    top_vc = True
+                else:
+                    print(f"block {i} is deactivated")
+                    activate = False 
+                    top_vc = False
+                    
+            else:
+                activate = True
+                top_vc = False
+                
+                
+            local_activation, _, _ = self.list_of_sparsify_modules[i](local_activation, top_vc=top_vc, activate=activate, select_index=select_index, device=device) # sparsified and reshaped (n, local_in_dim)
             local_activation = self.recover_module(local_activation).view(-1, self.local_out_channel, self.local_h, self.local_w) # [n, local_out_channel, local_h, local_w]
             # print("local_activation after recover reshape", local_activation.shape)
             list_of_post_recover.append(local_activation)
@@ -816,7 +885,543 @@ class Sparsify_hypercol_local_modular(nn.Module):
 
 
 
+class DiffSelection(nn.Module):
+    """Differentialble hypercolumn selection via MLP (1x1 conv)"""
+    def __init__(self, topk, which_conv, ch, hidden_ch, device="cuda", gumbel_temperature=1):
+        super(DiffSelection, self).__init__()
+        self.conv1 = which_conv(ch, hidden_ch, kernel_size=1, padding=0, bias=False)
+        self.relu = nn.ReLU()
+        self.conv2 = which_conv(hidden_ch, 1, kernel_size=1, padding=0, bias=False)
+        self.device = device
+        # differentiable temperature
+        self.gumbel_temperature = torch.nn.Parameter(torch.FloatTensor([gumbel_temperature]).to(device)) # 
+        self.gumbel_temperature.requires_grad = True
+        # topk
+        self.topk_percent = topk 
+
+    
+    def forward(self, x):
+        n, c, h, w = x.shape
+        x = self.conv1(x)
+        x = self.relu 
+        x = self.conv2(x) 
+
+        # build differential mask from gambel softmax
+        mask = self.gumbel_softmax(x, self.gumbel_temperature)
+
+        return x * mask, mask
+
+    def gumbel_softmax(self, logits, temperature, eps=1e-20):
+        """
+        input: [*, h, w]
+        return: [*, h, w] an one-hot mask
+        """
+        n, c, h, w = shape = logits.size()
+
+        # sample gumbel noise
+        U = torch.rand(shape).to(self.device)
+        gumbel_noise = -Variable(torch.log(-torch.log(U + eps) + eps))
+
+        # construct gumbel softmax
+        y = logits + gumbel_noise
+        y = F.softmax(y.view(n, c, h * w) / temperature, dim=2).view(n, c, h, w) # n, c, h, w
+
+        # topk selection
+        keep_top_num = max(int(self.topk_percent * h * w), 1)
+        _, index = torch.topk(transformed_x_normed.view(n, 1, h * w), keep_top_num, dim=2)
+        mask = torch.zeros((n, 1, h * w)).to(self.device).scatter_(2, index, 1.0).view(n, 1, h, w) # mask : [n, 1, h, w]
+        # straight-through mask
+        st_mask = (mask - y).detach() + y
+        
+        return st_mask
+
+
+class Sparse_vc_combination(nn.Module):
+    """select the visual concept and then use guassian interpolation to fill in the wholes"""
+    def __init__(self, topk, which_conv, ch, resolution, class_num, hidden_ch=None, device="cuda", gumbel_temperature=1.0):
+        super(Sparse_vc_combination, self).__init__()
+        self.myid = 'combine_vc_sparse_bottleneck'
+        self.device = device
+        self.topk = topk
+        self.class_num = class_num
+        self.h = self.w = resolution
+        self.keep_top_num = max(int(self.topk * self.h * self.w), 1)
+        if not hidden_ch:
+            hidden_ch = max(int(ch / 2), 1)
+        
+        self.select_module = DiffSelection(self.topk, which_conv, ch, hidden_ch, device=self.device, gumbel_temperature=gumbel_temperature)
+        # recover module (using linear combination for every pixels)
+        self.recover_matrix = nn.ModuleList([torch.nn.Parameter(torch.rand(self.keep_top_num, self.h * self.w)) for _ in range(self.class_num)]) # [k, h * w]
+        self.recover_matrix.requires_grad = True 
+        
+    def forward(self, x, y):
+        n, c, h, w = x.shape
+        # sparsify
+        x, mask = self.select_module(x)
+        _, index = torch.where(mask == 1.0)
+        x = torch.transpose(x[index[0], :, index[2], index[3]].view(n, self.keep_top_num, c), 1, 2) # [n, c, k]
+        # x @ recover_matrix
+        x = torch.matmul(x, self.recover_matrix) # [n, c, h * w]
+        x = x.view(n, c, h, w) # [n, c, h, w]
+
+        """
+        left work to do, how to fix the relative position of k?
+        """
+        return x
+
+
+def gumbel_top_softmax(logits, k, temperature=0.1, eps=1e-20, device='cuda'):
+    """
+    input: [*, h, w]
+    return: [*, h, w] an one-hot mask
+    """
+    n, c, h, w = shape = logits.size()
+
+    # sample gumbel noise
+    U = torch.rand(shape).to(device)
+    gumbel_noise = -Variable(torch.log(-torch.log(U + eps) + eps))
+
+    # construct gumbel softmax
+    y = logits + gumbel_noise
+    y = F.softmax(y.view(n, c, h * w) / temperature, dim=2).view(n, c, h, w) # n, c, h, w
+
+    # top selection
+    _, index = torch.topk(y.view(n, c, h * w), k, dim=2)
+    # print(index[2])
+    mask = torch.zeros((n, c, h * w)).to(device).scatter_(2, index, 1.0).view(n, c, h, w) # mask : [n, c, h, w]
+    print(mask[0].sum().item(), c)
+    # straight-through mask
+    st_mask = (mask - y).detach() + y
+    
+    return st_mask, y
 
 
 
+class Sparse_vc_map_combination(nn.Module):
+    def __init__(self, topk, which_conv, ch, resolution):
+        super(Sparse_vc_map_combination, self).__init__()
+        self.myid = "vc_map_combination"
+        self.topk = topk
+        self.resolution = resolution
+        self.ch = ch
+        self.topk_num = max(int(self.topk * (self.resolution ** 2)), 1)
 
+        self.map_conv = which_conv(self.ch, self.topk_num, kernel_size=1, padding=0, bias=False)
+
+
+    def forward(self, x, temp=0.1):
+        # print("temp: ", temp)
+        n, c, h, w = x.shape
+        k = self.topk_num
+        # print(f"n {n}, c {c}, h {h}, w {w}, k {k}")
+        # mapping 
+        mapping = self.map_conv(x) # n, k, h, w
+        # selecting the representive vc
+        st_masks = gumbel_top_softmax(mapping, 1, temp) # [n, k, h, w]
+
+        # print(st_masks.sum())
+        # print(f"st_masks {st_masks.shape}")
+        x = (st_masks.unsqueeze(2) * x.unsqueeze(1)).sum((3, 4)) # [n, k, 1, h, w] * [n, 1, c, h, w] -> [n, k, c, h, w] -> sum((3,4)) : [n, k, c]
+        # select 
+        print(f"before x transpose {x[0]}")
+        x = torch.transpose(x, 1, 2) # [n, c, k]
+        print(f"x transpose {x[0]}")
+        
+        # bilinear intepolation based on mapping
+        mapping = mapping.view(n, k, h * w) # [n, k, hw]
+        # print(f"mapping {mapping.shape}")
+        ## softmax normalization
+        mapping = F.softmax(mapping, dim=1) # mapping become probability [n, k, hw]
+        x = torch.matmul(x, mapping) # batched matrix maltiplation [n, c, k] @ [n, k, hw] -> [n, c, hw]
+        # print(f"before view x {x.shape}")
+        x = x.view(n, c, h, w) # [n, c, h, w]
+
+        return x
+
+###########################################################################
+# implicit
+class Sine(nn.Module):
+    """for implicit representation"""
+    def __init__(self, w0 = 1.):
+        super().__init__()
+        self.w0 = w0
+    def forward(self, x):
+        return torch.sin(self.w0 * x)
+
+#### recover by conv
+class conv_recover_block(nn.Module):
+    def __init__(self, which_conv, upsample, inch, outch):
+        super(conv_recover_block, self).__init__()
+        self.conv = which_conv(inch, outch)
+        self.upsample = upsample
+        self.activation = Sine()
+
+    
+    def forward(self, x):
+        x = self.upsample(x)
+        x = self.conv(x)
+        x = self.activation(x)
+        return x
+        
+
+
+class conv_recover(nn.Module):
+    def __init__(self, which_conv, upsample, topk_num, ch, resolution, start_reso=4, minimal_ch=16, class_condition=False, class_info_dim=0, 
+                    inner_class_dim=1, mask_reconstruct=False):
+        super(conv_recover, self).__init__()
+        self.ch = ch # input channel
+        self.interm_ch = max(1, self.ch // 2) # intermediate channel
+        self.one_vc_ch = max(self.interm_ch // topk_num, minimal_ch) # on indivual
+        self.resolution = resolution 
+        self.start_reso = start_reso
+        self.topk_num = topk_num
+        self.class_condition = class_condition # whether recover takes class information to conditional generate
+        self.class_info_dim = class_info_dim # conditioned on class info
+        self.inner_class_dim = inner_class_dim 
+        # build mask for each recover vc
+        self.mask_reconstruct = mask_reconstruct
+
+        end_rb, start_rb = int(torch.log2(torch.Tensor([resolution])).item()), int(torch.log2(torch.Tensor([start_reso])).item()) 
+        num_con_blocks = end_rb - start_rb
+        
+        # specify conv channels used
+        self.conv_chs = [self.one_vc_ch // 2**i for i in range(num_con_blocks, 0, -1)]
+        self.conv_chs += [self.one_vc_ch]
+        
+        print(end_rb, start_rb, num_con_blocks, len(self.conv_chs))
+        print(f"start_reso {start_reso}; self.conv_chs {self.conv_chs}")
+        # linear recover module 
+        if self.class_info_dim > 0:
+            self.linear_indim = self.ch + self.resolution + self.resolution + self.inner_class_dim # c + w + h + share_dim
+        else:
+            self.linear_indim = self.ch + self.resolution + self.resolution
+        self.linear_outdim = self.start_reso * self.start_reso * self.conv_chs[0]
+        self.linear_hidden_dim = self.linear_outdim
+        print(f"linear_indim {self.linear_indim}; linear_outdim {self.linear_outdim}")
+        self.linear1 = nn.Linear(self.linear_indim, self.linear_hidden_dim)
+        self.linear_activation = Sine()
+        self.linear2 = nn.Linear(self.linear_hidden_dim, self.linear_outdim)
+
+        # conv module 
+        self.conv_blocks = []
+        for i in range(num_con_blocks):
+            self.conv_blocks.append(conv_recover_block(which_conv, upsample, self.conv_chs[i], self.conv_chs[i+1]))
+        
+        self.conv_blocks = nn.ModuleList(self.conv_blocks)
+        if self.mask_reconstruct:
+            self.last_conv = which_conv(self.topk_num * (self.conv_chs[-1] - 1), self.ch)
+        else:
+            self.last_conv = which_conv(self.topk_num * self.conv_chs[-1], self.ch)
+        
+        if self.class_info_dim > 0:
+            self.class_conditional_module = nn.Sequential(
+                nn.Linear(self.class_info_dim, 10 * self.inner_class_dim),
+                Sine(),
+                nn.Linear(10 * self.inner_class_dim, self.inner_class_dim),
+                Sine()
+            )
+
+    def forward(self, x, x_position, y_position, class_info=None):
+        """x is [n, k, c]
+        x_position: [n, k, w]
+        y_position: [n, k, h]
+        class_info: [n,]
+        """
+        n, k, c = x.shape
+        if class_info is not None:
+            # print("self.class_condition")
+            class_info = self.class_conditional_module(class_info)
+            class_info = class_info.unsqueeze(1).repeat(1, k, 1) # [n, k, share_dim]
+            x = torch.cat([x, x_position, y_position, class_info], dim=2).reshape(n * k, -1) # [n * k, c + w + h + share_dim]
+        else:
+            x = torch.cat([x, x_position, y_position], dim=2).view(n * k, -1) # [n * k, c + w + h]
+        x = self.linear1(x)
+        x = self.linear_activation(x)
+        x = self.linear2(x).view(-1, self.conv_chs[0], self.start_reso, self.start_reso) # [n * k, c + w + h]
+        # print(f"x_inter_1 {x.shape}")
+
+        # convs
+        for block in self.conv_blocks:
+            x = block(x) # n * k, one_ch, h, w
+            # print(f"x_inter {x.shape}") 
+        
+        # construct mask 
+        
+        if self.mask_reconstruct:
+            # print(f"previous x {x.shape}")
+            mask_x = x[:, 0:1, :, :]
+            x = x[:, 1:, :, :]
+            # print(f"current x {x.shape}")
+            mask_x = F.softmax(mask_x.view(n * k, 1, -1), dim=2).view(n * k, 1, self.resolution, self.resolution) # n * k, 1, h, w
+            x = mask_x * x # n * k, one_ch-1, h, w
+            # print(f"masked_x {x.shape}; k {k}; n {n}; self.one_vc_ch {self.one_vc_ch}")
+            x = x.view(n, k * (self.conv_chs[-1] - 1), self.resolution, self.resolution)
+            x = self.last_conv(x) # [n, c, h, w]
+            mask_x = mask_x.view(n, k, self.resolution, self.resolution) # [n, k, h, w]
+        else:
+            # concat then and refine
+            x = x.view(n, k * self.one_vc_ch, self.resolution, self.resolution)
+            x = self.last_conv(x) # [n, c, h, w]
+            mask_x = None
+        return x, mask_x # [n, c, h, w]
+
+
+# import functools
+# which_conv = functools.partial(SNConv2d, kernel_size=3, padding=1,
+#                                                 num_svs=1, num_itrs=1,
+#                                                 eps=1e-12) 
+# upsample = functools.partial(F.interpolate, scale_factor=2)
+
+# ch, resolution = 756, 16
+# topk = int(0.1 * resolution**2)
+
+# model = conv_recover(which_conv, upsample, topk, ch, resolution)
+
+# count = 0
+# for module in model.modules():
+#     count += sum([p.data.nelement() for p in module.parameters()])
+# print(f"parameter count: {count}")
+
+# x = torch.rand(10, ch + resolution + resolution)
+# out = model(x)
+# print(out.shape)
+
+
+class spatial_implicit_comb(nn.Module):
+    """for each of the vc, use implicit NN to generate k probability. Each vc would be a combination of HW hypercolumns
+    input: x [n, c, h, w]
+    output: x [n, k, c], 
+    """
+    def __init__(self, ch, topk_num, resolution, class_info_dim=0, inner_class_dim=1, sparse_weight=False, weight_sparsity=0.3):
+        super(spatial_implicit_comb, self).__init__()
+        self.topk_num = topk_num
+        self.weight_sparsity = weight_sparsity
+        self.sparse_weight = sparse_weight
+
+        if class_info_dim > 0:
+            self.input_dim = ch + resolution * 2 + inner_class_dim
+        else:
+            self.input_dim = ch + resolution * 2 
+        self.hidden_dim1 = self.input_dim
+        self.hidden_dim2 = 2 * self.hidden_dim1
+        self.output_dim = topk_num
+        self.class_info_dim = class_info_dim
+        self.inner_class_dim = inner_class_dim
+
+        self.implicit_select_module = nn.Sequential(
+                nn.Linear(self.input_dim, self.hidden_dim1),
+                Sine(), # using sine activation according to SIREN
+                nn.Linear(self.hidden_dim1, self.hidden_dim2),
+                Sine(),
+                nn.Linear(self.hidden_dim2, self.hidden_dim2),
+                Sine(),
+                nn.Linear(self.hidden_dim2, self.output_dim)
+            )
+        
+        if self.class_info_dim > 0:
+            self.class_conditional_module = nn.Sequential(
+                nn.Linear(self.class_info_dim, 10 * self.inner_class_dim),
+                Sine(),
+                nn.Linear(10 * self.inner_class_dim, self.inner_class_dim),
+                Sine(),
+            )
+    def position(self, n, h, w, device='cuda'):
+        """find position encoding of the reshape operation n*h*w"""
+        # for x (i.e. len(x) = w)
+        x_position = torch.cat([torch.eye(w) for _ in range(n * h)]).to(device) # n * h * w, w
+        # for y (i.e len(y) = h)
+        y_position_i = torch.cat([torch.zeros(w, h).scatter_(1, torch.LongTensor([[i] for _ in range(w)]), 1.) for i in range(h)]) # w * h, h
+        y_position = torch.cat([y_position_i.clone() for _ in range(n)]).to(device) # n * h * w, h
+
+        return x_position, y_position
+
+    def forward(self, x, device='cuda', class_info=None):
+        """x: [n, c, h, w]
+        class_info: [n, dim] or None
+        """
+        n, c, h, w = x.shape
+        # reshape to [n*h*w, c]
+        x = torch.transpose(x.view(n, c, h*w), 1, 2).reshape(n*h*w, c) # n * h * w, c
+
+        # preparing position encoding for implicit
+        x_position, y_position = self.position(n, h, w, device=device) # [n * h * w, w], [n * h * w, h]
+        
+        if class_info is not None:
+            # prepare class condition info
+            # print(f"class_info {class_info.shape}")
+            class_info = self.class_conditional_module(class_info) # n, inner_classdim
+            class_info = class_info.unsqueeze(1).unsqueeze(1).repeat(1, h, w, 1).reshape(n * h * w, self.inner_class_dim)
+            # class_info = class_info.unsqueeze(1).unsqueeze(1).unsqueeze(1).expand(n, h, w, self.class_info_dim).reshape(n * h * w, self.class_info_dim) # [n * h * w, share_dim]
+            implicit_input = torch.cat([x, x_position, y_position, class_info], axis=1) # [n * h * w, (c + w + h + share_dim)]
+        else:
+            # print("class info is None")
+            implicit_input = torch.cat([x, x_position, y_position], axis=1) # [n * h * w, (c + w + h)]
+            # print(f"implicit_input {implicit_input.shape}")
+
+        # calculate k probability for n * h * w data
+        weight = self.implicit_select_module(implicit_input) # # n * h * w, k
+        weight = torch.transpose(weight.reshape(n, h * w, self.topk_num), 1, 2) # n, k, h * w
+
+        ## normalize weight by softmax
+        weight = F.softmax(weight, dim=2)
+
+        # orthogonoal weights
+        weight_TT = torch.matmul(weight, torch.transpose(weight, 1, 2))
+        weight_TT = ((weight_TT - torch.eye(self.topk_num).to(device))**2).mean()
+        # print(f"weight !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! {weight_TT.shape}")
+        # sparse weight ?
+        if self.sparse_weight:
+            weight = sparse_1d_func(weight, self.weight_sparsity, device) # [n, k, h * w]
+        # batched @ to get sparsed vc
+        sparse_vc = torch.matmul(weight, x.view(n, h * w, c)) # [n, k, c]
+        # location info of the sparsity
+        vc_x_position = torch.matmul(weight, x_position.view(n, h * w, w)) # [n, k, w]
+        vc_y_position = torch.matmul(weight, y_position.view(n, h * w, h)) # [n, k, h]
+
+        return sparse_vc, vc_x_position, vc_y_position, weight_TT
+
+
+class vc_interaction_sa_module(nn.Module):
+    def __init__(self, input_ch):
+        """vc lateral connection via selected vcs' self attention"""
+        super(vc_interaction_sa_module, self).__init__()
+        self.input_ch = input_ch
+        self.attention_ch = max(input_ch // 8, 1)
+        self.theta = nn.Linear(self.input_ch, self.attention_ch)
+        self.phi = nn.Linear(self.input_ch, self.attention_ch)
+        self.psi = nn.Linear(self.input_ch, self.attention_ch)
+        self.back_to_input_ch1 = nn.Linear(self.attention_ch, max(self.input_ch // 2, 1))
+        self.back_to_input_activation = nn.ReLU()
+        self.back_to_input_ch2 = nn.Linear(max(self.input_ch // 2, 1), self.input_ch)
+
+        # Learnable gain parameter
+        self.gamma = P(torch.tensor(0.), requires_grad=True)
+
+    def forward(self, x):
+        """x: [n, k, c]
+        """
+        n, k, c = x.shape
+        x1 = self.theta(x.view(-1, c)).view(n, k, -1) # n, k, atten_ch
+        x2 = self.phi(x.view(-1, c)).view(n, k, -1) # n, k, atten_ch
+        x3 = self.psi(x.view(-1, c)).view(n, k, -1) # n, k, atten_ch
+
+        # atten self
+        cov = torch.matmul(x2, torch.transpose(x1, 1, 2)) # n, k, n * k
+        # softmax to probability
+        cov = F.softmax(cov, dim=1)
+        o = torch.matmul(cov, x3) # n, k, atten_ch
+        
+        # map it back
+        o = self.back_to_input_ch1(o)
+        o = self.back_to_input_activation(o)
+        o = self.back_to_input_ch2(o)
+
+        return x + self.gamma * o # [n, k, c]
+        
+
+def sparse_1d_func(x, topk, device):
+    """sparsity for 1d"""
+    n, k, c = x.shape 
+    keep_top_num = max(int(topk * c), 1)
+    _, index = torch.topk(x.abs(), keep_top_num, dim=2)
+    mask = torch.zeros_like(x).scatter_(2, index, 1.).to(device)
+    # print("mask percent: ", mask.mean().item())
+    sparse_x = mask * x
+    return sparse_x.view(n, k, c)
+
+
+class Implicit_sparse_vc_recover(nn.Module):
+    def __init__(self, topk, ch, resolution, y_share_dim=0, vc_go_sparse=False, spatial_implicit_comb_sparse_weight=False, mask_reconstruct=False):
+        super(Implicit_sparse_vc_recover, self).__init__()
+        self.myid = "implicit_sparse_vc_recover"
+        self.topk = topk # percent to keep
+        self.ch = ch
+        self.resolution = resolution 
+        self.topk_num = max(1, int(self.topk * resolution**2))
+        self.y_share_dim = y_share_dim
+
+        # sparsify module
+        self.spatial_implicit_comb = spatial_implicit_comb(self.ch, self.topk_num, self.resolution, class_info_dim=y_share_dim, sparse_weight=spatial_implicit_comb_sparse_weight)
+        self.vc_go_sparse = vc_go_sparse
+        # vc interactions
+        self.vc_interaction1 = vc_interaction_sa_module(self.ch)
+        self.vc_interaction2 = vc_interaction_sa_module(self.ch)
+
+        # use normal conv2d for implicit recover
+        which_conv = functools.partial(nn.Conv2d, kernel_size=3, padding=1)
+        upsample = functools.partial(F.interpolate, scale_factor=2)
+        print("ch", self.ch)
+        self.conv_recover = conv_recover(which_conv, upsample, self.topk_num, self.ch, self.resolution, class_info_dim=y_share_dim, mask_reconstruct=mask_reconstruct)
+
+    def forward(self, x, device="cuda", class_info=None, eval_vc_index=None):
+        """x : [n, c, h, w]"""
+        n, c, h, w = x.shape
+        if self.y_share_dim > 0:
+            assert class_info is not None, f"class_info is {class_info.shape} while y_share_dim = {self.y_share_dim}"
+        else:
+            assert class_info is None, f"class_info is {class_info.shape} while y_share_dim = {self.y_share_dim}"
+        
+        sparse_vc, vc_x_position, vc_y_position, weight_TT = self.spatial_implicit_comb(x, device=device, class_info=class_info) # [n, k, c], [n, k, w], [n, k, h]
+        # if eval vc, maskout others
+
+        if self.vc_go_sparse:
+            sparse_vc = sparse_1d_func(sparse_vc, self.topk, device)
+        
+        if eval_vc_index is not None:
+            print(f"eval_vc_index is {eval_vc_index}")
+            print(f"sparse_vc {sparse_vc.shape} {sparse_vc[0]}")
+            print("sparse vc correlation")
+            cov = torch.matmul(sparse_vc, torch.transpose(sparse_vc, 1, 2))[22]
+            print(cov.shape)
+            print(cov)
+            for i in range(len(cov)):
+                print(cov[i])
+            print(cov.shape)
+            # plot vc cov
+            plot_vc(cov, sparse_vc[22])
+            assert eval_vc_index < sparse_vc.shape[1], f"eval_vc_index {eval_vc_index} is invalid since [n, k, c] is {sparse_vc.shape}"
+            sparse_vc = eval_vc_mask(sparse_vc, eval_vc_index)
+            vc_x_position = eval_vc_mask(vc_x_position, eval_vc_index)
+            vc_y_position = eval_vc_mask(vc_y_position, eval_vc_index)
+        # interaction between vcs
+        x = self.vc_interaction1(sparse_vc) # [n, k, c]
+        x = self.vc_interaction2(x) # [n, k, c]
+
+
+        # recover
+        x, mask_x = self.conv_recover(x, vc_x_position, vc_y_position, class_info=class_info) # [n, k, c], [n, k, w], [n, k, h] -> [n, c, h, w]
+
+        assert x.shape == (n, c, h, w), f"x.shape {x.shape} != {(n, c, h, w)}"
+
+        return x, weight_TT, mask_x
+
+
+def eval_vc_mask(sparse_vc, index):
+    """sparse_vc: [n, k, c]
+    out: [n, k, c] but only index on dim is activated, others are zero masked out"""
+    eval_vc_mask = torch.zeros_like(sparse_vc)
+    eval_vc_mask[:, index, :] = 1.
+    # eval_vc_mask[:, index+2, :] = 1.
+    print(f"eval_vc_mask {eval_vc_mask.sum()}; index {index}")
+    out = sparse_vc * eval_vc_mask
+    print(f"out {out.mean()}")
+    return out
+
+
+def plot_vc(cov, sparse_vc):
+    import matplotlib.pyplot as plt
+    import numpy as np
+    import seaborn as sns
+    cov = cov.numpy()
+    plt.imshow(cov, cmap='hot', interpolation='nearest')
+    plt.savefig("/lab_data/leelab/tianqinl/BigGAN-PyTorch/scripts/1percent/evals/hypercolumn_sparse_implicit_recover_vc_sparse_comb_weight_sparse_10percent/vc_layer1.png")
+    plt.close()
+
+    
+    plt.clf()
+    plt.gca().set_aspect('equal')
+    sparse_vc = sparse_vc.numpy()
+    # sns.heatmap(sparse_vc, annot=False,  linewidths=.5)
+    plt.imshow(sparse_vc, cmap='hot', interpolation='nearest')
+    plt.savefig("/lab_data/leelab/tianqinl/BigGAN-PyTorch/scripts/1percent/evals/hypercolumn_sparse_implicit_recover_vc_sparse_comb_weight_sparse_10percent/vc_activation_layer1.png")
+    plt.close()

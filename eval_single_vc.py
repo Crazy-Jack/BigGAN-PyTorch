@@ -33,7 +33,8 @@ from utils_imgpool import ImagePool
 
 
 def activation_extract(G, D, E, G_ema, fixed_x, fixed_y, z_, y_,
-                    state_dict, config, experiment_name, save_weights=False):
+                    state_dict, config, experiment_name, device, normal_eval, eval_vc):
+
     # Use EMA G for samples or non-EMA?
     which_G = G_ema if config['ema'] and config['use_ema'] else G
 
@@ -51,81 +52,47 @@ def activation_extract(G, D, E, G_ema, fixed_x, fixed_y, z_, y_,
             print("fixed_z: ", fixed_z.shape)
             print("fixed_y: ", fixed_y.shape)
         
-            fixed_Gz, intermediates = nn.parallel.data_parallel(
-                which_G, (fixed_z, which_G.shared(fixed_y), int(1 / config['sparse_decay_rate']) + 100, True)).detach()
+            output = nn.parallel.data_parallel(
+                which_G, (fixed_z, which_G.shared(fixed_y), int(1 / config['sparse_decay_rate']) + 100), False, device, normal_eval, eval_vc)
+            
+            fixed_Gz = output[0]
+            
             
             if (not config['no_adaptive_tau']) and (state_dict['itr'] * config['sparse_decay_rate'] < 1.1):
-                fixed_Gz_train, intermediates = nn.parallel.data_parallel(
-                    which_G, (fixed_z, which_G.shared(fixed_y), state_dict['itr'], True)).detach()
+                fixed_Gz_train = nn.parallel.data_parallel(
+                    which_G, (fixed_z, which_G.shared(fixed_y), state_dict['itr'], True, device, normal_eval, eval_vc)).detach()
         else:
+            # print("fixed_x", fixed_x)
             fixed_z, _, _ = E(fixed_x)
-            fixed_Gz, intermediates = which_G(fixed_z, which_G.shared(fixed_y), int(1 / config['sparse_decay_rate']) + 100, return_inter_activation=True)
+            fixed_Gz, weights_TTs = which_G(fixed_z, which_G.shared(fixed_y), int(1 / config['sparse_decay_rate']) + 100, device=device, normal_eval=normal_eval, eval_vc=eval_vc)
             if (not config['no_adaptive_tau']) and (state_dict['itr'] * config['sparse_decay_rate'] < 1.1):
-                fixed_Gz_train, intermediates = which_G(fixed_z, which_G.shared(fixed_y), state_dict['itr'], return_inter_activation=True)
+                fixed_Gz_train = which_G(fixed_z, which_G.shared(fixed_y), state_dict['itr'], device=device, normal_eval=normal_eval, eval_vc=eval_vc)
 
     print("check3 -----------------------------")
     if not os.path.isdir('%s/%s' % (config['evals_root'], experiment_name)):
         os.mkdir('%s/%s' % (config['evals_root'], experiment_name))
-    image_filename = '%s/%s/test_iter_%s.jpg' % (config['evals_root'],
-                                                    experiment_name,
-                                                    state_dict['itr'])
+    if not normal_eval:
+        image_filename = '%s/%s/test_iter_%s_layer_%i_vc_index_%i.jpg' % (config['evals_root'],
+                                                        experiment_name,
+                                                        state_dict['itr'], 
+                                                        config['test_layer'],
+                                                        config['select_index'])
+    else:
+        image_filename = '%s/%s/test_iter_%s_normal_eval.jpg' % (config['evals_root'],
+                                                        experiment_name,
+                                                        state_dict['itr'])
     image_origin_filename = '%s/%s/origin_iter_%s.jpg' % (config['evals_root'],
-                                                    experiment_name,
-                                                    state_dict['itr'])
-    activation_filename = '%s/%s/inter_activation_iter_%s.pt' % (config['evals_root'],
-                                                    experiment_name, state_dict['itr'])
+                                                        experiment_name,
+                                                        state_dict['itr'])
+                                                        
     print("######### save_path #####: ", image_filename)
     torchvision.utils.save_image(fixed_x.float().cpu(), image_origin_filename,
                                  nrow=int(fixed_x.shape[0] ** 0.5), normalize=True)
     torchvision.utils.save_image(fixed_Gz.float().cpu(), image_filename,
                                  nrow=int(fixed_Gz.shape[0] ** 0.5), normalize=True)
-    torch.save(intermediates, activation_filename)
-
-    return fixed_x.float().cpu(), fixed_Gz.float().cpu(), intermediates
 
 
-
-def plot_channel_activation(intermediates, img_index, img, experiment_name, config, state_dict, save_root):
-    """plot intermediate activation for each channel
-    param: 
-        - intermediates: {layer_index: numpy.array(N, C, H, W)}
-        - img_index: int, between 0 and N
-    """
-    print("Document img examined : img_idx {}")
-    target_img_name = '{}/{}/{}/img_{}_iter_{}_target_.jpg'.format(save_root,
-                                                    experiment_name, state_dict['itr'], 
-                                                    img_index, state_dict['itr'])
-    torchvision.utils.save_image(img, target_img_name, normalize=True)
-
-    for layer_index in intermediates:
-        layer_activation = intermediates[layer_index][img_index].unsqueeze(1) # [C, 1, H, W]
-        C, _, H, W = layer_activation.shape
-        activatity_channels = layer_activation.reshape(C, -1).std(1)
-        sorted_act_index = torch.argsort(activatity_channels, descending=True)
-        sorted_layer_activation = layer_activation[sorted_act_index]
-        activation_visual_name = '%s/%s/%s/img_%s_iter_%s_plot_inter_activation_layer_%s.jpg' % (save_root,
-                                                    experiment_name, state_dict['itr'], img_index, state_dict['itr'], layer_index)
-        print("Ploting (img_idx {}) for layer {} activation shape {}".format(img_index, layer_index, layer_activation.shape))
-        torchvision.utils.save_image(sorted_layer_activation.float(), activation_visual_name,
-                                 nrow=int(layer_activation.shape[0] ** 0.5), normalize=True, padding=1, pad_value=1)
-
-        # sum of channels
-        activation_sum_name = '%s/%s/%s/img_%s_sum_iter_%s_plot_inter_activation_layer_%s.jpg' % (save_root,
-                                                    experiment_name, state_dict['itr'], img_index, state_dict['itr'], layer_index)
-        sum_activation = layer_activation.sum(0)
-        torchvision.utils.save_image(sum_activation.float(), activation_sum_name,
-                                 nrow=int(layer_activation.shape[0] ** 0.5), normalize=True, padding=1, pad_value=0.5)
-
-        # ONE channel activation
-        mean_activation = intermediates[layer_index].mean(0).reshape(C, -1).std(1) 
-        select_one_ch = torch.argsort(mean_activation, descending=True)[0]
-        ## plot all the activation on that channel
-        one_ch_name = '%s/%s/%s/iter_%s_onech_plot_inter_activation_layer_%s.jpg' % (save_root,
-                                                    experiment_name, state_dict['itr'], state_dict['itr'], layer_index)
-        torchvision.utils.save_image(intermediates[layer_index][:, select_one_ch, :, :].unsqueeze(1).float(), one_ch_name,
-                                 nrow=int(intermediates[layer_index].shape[0] ** 0.5), normalize=True, padding=1, pad_value=0.5)
-
-        
+    return fixed_x.float().cpu(), fixed_Gz.float().cpu()
 
         
 
@@ -154,7 +121,7 @@ def run(config):
         print('Skipping initialization for training resumption...')
         config['skip_init'] = True
     config = utils.update_config_roots(config)
-    device = 'cuda'
+    device = 'cpu'
 
     # Seed RNG
     utils.seed_rng(config['seed'])
@@ -241,7 +208,7 @@ def run(config):
     fixed_y.sample_()
     print("fixed_y original: {} {}".format(fixed_y.shape, fixed_y[:10]))
     ## TODO: change the sample method to sample x and y
-    fixed_x, fixed_y_of_x = utils.prepare_x_y(G_batch_size, train_dataset, experiment_name, config)
+    fixed_x, fixed_y_of_x = utils.prepare_x_y(G_batch_size, train_dataset, experiment_name, config, device=device)
     
 
     # Build image pool to prevent mode collapes
@@ -276,11 +243,15 @@ def run(config):
         G.eval()
         if config['ema']:
             G_ema.eval()
-    fixed_x, fixed_Gz, intermediates = activation_extract(G, D, E, G_ema, fixed_x, fixed_y_of_x, z_, y_,
-                                state_dict, config, experiment_name, save_weights=config['save_weights'])
+    # vc visualization
+    print("VC visualization ===============")
+    activation_extract(G, D, E, G_ema, fixed_x, fixed_y_of_x, z_, y_,
+                                state_dict, config, experiment_name, device, normal_eval=False, eval_vc=True)
+    # normal activation
+    print("Normal activation ===============")
+    # activation_extract(G, D, E, G_ema, fixed_x, fixed_y_of_x, z_, y_,
+    #                             state_dict, config, experiment_name, device, normal_eval=True, eval_vc=False) # produce normal fully activated images
     
-    plot_channel_activation(intermediates, config['img_index'], fixed_Gz[config['img_index']], experiment_name, config, state_dict)
-
 def main():
     # parse command line and run
     parser = utils.prepare_parser()

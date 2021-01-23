@@ -18,12 +18,12 @@ python ../../train.py \
 --use_multiepoch_sampler \
 --pbar tqdm \
 --inference_nosample \
---experiment_name ch64_mirrorE_hypercolumn_sparse_local_modular_recover_4percent \
---sparsity_resolution 8_16_32_64 --sparsity_ratio 4_4_4_4 \
+--experiment_name hypercolumn_sparse_combine_vc_10percent \
+--sparsity_resolution 8_16_32_64 --sparsity_ratio 10_10_10_10 \
 --save_weights \
 --encoder Resnet-18 \
---sparsity_mode local_modular_hyper_col \
+--sparsity_mode combine_vc_sparse_bottleneck \
 --sparse_decay_rate 1e-3 \
 --no_adaptive_tau \
---img_index 31 \
---resume \
+--gumbel_temperature 1.0 \
+# --resume \

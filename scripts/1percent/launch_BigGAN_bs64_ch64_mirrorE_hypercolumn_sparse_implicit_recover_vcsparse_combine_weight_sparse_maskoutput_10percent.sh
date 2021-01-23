@@ -1,8 +1,8 @@
 #!/bin/bash
 python ../../train.py \
 --data_root /user_data/tianqinl/Dataset \
---dataset Mysmall_128 --parallel --shuffle  --num_workers 32 --batch_size 64 \
---num_G_accumulations 3 --num_D_accumulations 3 \
+--dataset Mysmall_128 --parallel --shuffle  --num_workers 32 --batch_size 30 \
+--num_G_accumulations 2 --num_D_accumulations 2 \
 --num_D_steps 1 --G_lr 1e-4 --D_lr 4e-4 --E_lr 1e-4 --D_B2 0.999 --G_B2 0.999 --E_B2 0.999 \
 --lambda_vae_kld 1e-3 --lambda_vae_recon 1 \
 --G_attn 8_16_32_64 --D_attn 64 \
@@ -18,12 +18,13 @@ python ../../train.py \
 --use_multiepoch_sampler \
 --pbar tqdm \
 --inference_nosample \
---experiment_name ch64_mirrorE_hypercolumn_sparse_local_modular_recover_4percent \
---sparsity_resolution 8_16_32_64 --sparsity_ratio 4_4_4_4 \
+--experiment_name hypercolumn_sparse_implicit_recover_vc_sparse_comb_weight_sparse_maskoutput_10percent \
+--sparsity_resolution 8_16_32_64 --sparsity_ratio 10_10_10_10 \
 --save_weights \
 --encoder Resnet-18 \
---sparsity_mode local_modular_hyper_col \
+--sparsity_mode implicit_sparse_vc_recover_vcsparse_weight_sp_maskoutput \
 --sparse_decay_rate 1e-3 \
 --no_adaptive_tau \
---img_index 31 \
+--lambda_mask_loss_weights_complement 0 \
+--lambda_mask_loss_weights_contrast 0 \
 --resume \
