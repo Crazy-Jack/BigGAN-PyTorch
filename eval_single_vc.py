@@ -12,7 +12,7 @@ import functools
 import math
 import numpy as np
 from tqdm import tqdm, trange
-
+from itertools import repeat
 
 import torch
 import torch.nn as nn
@@ -21,6 +21,8 @@ import torch.optim as optim
 import torch.nn.functional as F
 from torch.nn import Parameter as P
 import torchvision
+import matplotlib.pyplot as plt 
+import matplotlib.gridspec as gridspec
 
 # Import my stuff
 import inception_utils
@@ -32,8 +34,9 @@ from utils_imgpool import ImagePool
 
 
 
+
 def activation_extract(G, D, E, G_ema, fixed_x, fixed_y, z_, y_,
-                    state_dict, config, experiment_name, device, normal_eval, eval_vc):
+                    state_dict, config, experiment_name, device, normal_eval, eval_vc, return_mask):
 
     # Use EMA G for samples or non-EMA?
     which_G = G_ema if config['ema'] and config['use_ema'] else G
@@ -53,8 +56,8 @@ def activation_extract(G, D, E, G_ema, fixed_x, fixed_y, z_, y_,
             print("fixed_y: ", fixed_y.shape)
         
             output = nn.parallel.data_parallel(
-                which_G, (fixed_z, which_G.shared(fixed_y), int(1 / config['sparse_decay_rate']) + 100), False, device, normal_eval, eval_vc)
-            
+                which_G, (fixed_z, which_G.shared(fixed_y), int(1 / config['sparse_decay_rate']) + 100), repeat(False), repeat(device), normal_eval, eval_vc)
+            print("output.shape", len(output))
             fixed_Gz = output[0]
             
             
@@ -64,15 +67,26 @@ def activation_extract(G, D, E, G_ema, fixed_x, fixed_y, z_, y_,
         else:
             # print("fixed_x", fixed_x)
             fixed_z, _, _ = E(fixed_x)
-            fixed_Gz, weights_TTs = which_G(fixed_z, which_G.shared(fixed_y), int(1 / config['sparse_decay_rate']) + 100, device=device, normal_eval=normal_eval, eval_vc=eval_vc)
+            output = which_G(fixed_z, which_G.shared(fixed_y), int(1 / config['sparse_decay_rate']) + 100, device=device, normal_eval=normal_eval, eval_vc=eval_vc, return_mask=return_mask)
+            print("output.shape", len(output))
+            fixed_Gz = output[0]
+            print("fixed_Gz.shape", fixed_Gz.shape)
+
+            if return_mask:
+                masks = output[1][0]
+                prob_vects = output[1][1]
+                previous_prob_vects = output[1][2]
+                origin_affinity_map = output[1][3]
+                
             if (not config['no_adaptive_tau']) and (state_dict['itr'] * config['sparse_decay_rate'] < 1.1):
                 fixed_Gz_train = which_G(fixed_z, which_G.shared(fixed_y), state_dict['itr'], device=device, normal_eval=normal_eval, eval_vc=eval_vc)
 
     print("check3 -----------------------------")
-    if not os.path.isdir('%s/%s' % (config['evals_root'], experiment_name)):
-        os.mkdir('%s/%s' % (config['evals_root'], experiment_name))
+    save_dir = '%s/%s' % (config['evals_root'], experiment_name)
+    if not os.path.isdir(save_dir):
+        os.mkdir(save_dir)
     if not normal_eval:
-        image_filename = '%s/%s/test_iter_%s_layer_%i_vc_index_%i.jpg' % (config['evals_root'],
+        image_filename = '%s/%s/test_iter_%s_layer_%i_vc_index_%s.jpg' % (config['evals_root'],
                                                         experiment_name,
                                                         state_dict['itr'], 
                                                         config['test_layer'],
@@ -91,11 +105,89 @@ def activation_extract(G, D, E, G_ema, fixed_x, fixed_y, z_, y_,
     torchvision.utils.save_image(fixed_Gz.float().cpu(), image_filename,
                                  nrow=int(fixed_Gz.shape[0] ** 0.5), normalize=True)
 
+    if return_mask:
+        for layers in range(len(masks)):
+            layer_map_name = os.path.join(save_dir, f"iter_{state_dict['itr']}_layer_img_{config['img_index']}_{layers}_mask.jpg")
+            mask_i = masks[layers].float().cpu()[config['img_index']] # [n, k, h_m, w_m]
+            L, h, w = mask_i.shape
+            mask_i = mask_i.view(-1, 1, h, w).repeat(1, 3, 1, 1)
+            torchvision.utils.save_image(mask_i, layer_map_name, nrow=L, normalize=False)
+            
+            prob_vect_i = prob_vects[layers].float().cpu() # [n, L, vc_dict_size]
+            previous_prob_vect_i = previous_prob_vects[layers].float().cpu() # [n, L, vc_dict_size]
+            print("===================================================================================")
+            print(f"prob_vect_i {prob_vect_i.shape}")
+            print(f"previous_prob_vect_i {previous_prob_vect_i.shape}")
+            # for index_img
+            prob_vect_index = prob_vect_i[config['img_index']]
+            previous_prob_vect_index = previous_prob_vect_i[config['img_index']]
+        
+            # plot
+            plot_signle_prob_vect(os.path.join(save_dir, f"iter_{state_dict['itr']}_layer_img_{config['img_index']}_prob_after.jpg"), prob_vect_index)
+            plot_signle_prob_vect(os.path.join(save_dir, f"iter_{state_dict['itr']}_layer_img_{config['img_index']}_prob_before.jpg"), previous_prob_vect_index)
+
+
+            # original affinity map
+            origin_affinity_map_i = origin_affinity_map[layers].float().cpu() # [n, L, vc_dict_size, kernel, kernel]
+            print(f"origin_affinity_map_i {origin_affinity_map_i.shape}")
+            if "_" not in config['select_index']:
+                origin_affinity_map_index_onepatch = origin_affinity_map_i[config['img_index'], int(config['select_index'])]
+                plot_signle_affinity_map(os.path.join(save_dir, f"iter_{state_dict['itr']}_layer_img_{config['img_index']}_patch_{config['select_index']}_origin_affinity.jpg"), 
+                                        origin_affinity_map_index_onepatch, softmax=False)
+
+            
+            print("===================================================================================")
+
+
+
+
+
+
+            
 
     return fixed_x.float().cpu(), fixed_Gz.float().cpu()
 
         
+def plot_signle_prob_vect(name, prob_vect_index):
+    """prob_vect_index: [L, vc_dict_size]
+    """
+    L, vc_dict_size = prob_vect_index.shape
+    plt.clf()
+    fig = plt.figure(figsize=(32, 2))
+    min_ = prob_vect_index.min()
+    max_ = prob_vect_index.max()
+    gs1 = gridspec.GridSpec(ncols=L, nrows=1)
+    axs = []
+    for i in range(L):
+        axs.append(fig.add_subplot(gs1[i]))
+        axs[-1].plot(np.arange(vc_dict_size), np.array(prob_vect_index[i]))
+        axs[-1].set_ylim([min_, max_])
+    plt.savefig(name)
+    plt.close()
 
+
+
+def plot_signle_affinity_map(name, origin_affinity_map_index_onepatch, softmax=False):
+    """prob_vect_index: [vc_dict_size, kernel, kernel]
+    """
+    vc_dict_size, kernel, kernel = origin_affinity_map_index_onepatch.shape
+    origin_affinity_map_index_onepatch = origin_affinity_map_index_onepatch.view(vc_dict_size, kernel*kernel)
+    if softmax:
+        origin_affinity_map_index_onepatch = F.softmax(origin_affinity_map_index_onepatch, dim=0) 
+    origin_affinity_map_index_onepatch = torch.transpose(origin_affinity_map_index_onepatch, 0, 1)
+    min_ = origin_affinity_map_index_onepatch.min()
+    max_ = origin_affinity_map_index_onepatch.max()
+    plt.clf()
+    fig = plt.figure(figsize=(32, 32))
+    
+    gs1 = gridspec.GridSpec(ncols=kernel, nrows=kernel)
+    axs = []
+    for i in range(kernel*kernel):
+        axs.append(fig.add_subplot(gs1[i]))
+        axs[-1].plot(np.arange(vc_dict_size), np.array(origin_affinity_map_index_onepatch[i]))
+        axs[-1].set_ylim([min_, max_])
+    plt.savefig(name)
+    plt.close()
 
 
 
@@ -121,7 +213,7 @@ def run(config):
         print('Skipping initialization for training resumption...')
         config['skip_init'] = True
     config = utils.update_config_roots(config)
-    device = 'cpu'
+    device = 'cuda'
 
     # Seed RNG
     utils.seed_rng(config['seed'])
@@ -244,13 +336,13 @@ def run(config):
         if config['ema']:
             G_ema.eval()
     # vc visualization
-    print("VC visualization ===============")
+    # print("VC visualization ===============")
     activation_extract(G, D, E, G_ema, fixed_x, fixed_y_of_x, z_, y_,
-                                state_dict, config, experiment_name, device, normal_eval=False, eval_vc=True)
+                                state_dict, config, experiment_name, device, normal_eval=False, eval_vc=True, return_mask=False)
     # normal activation
     print("Normal activation ===============")
-    # activation_extract(G, D, E, G_ema, fixed_x, fixed_y_of_x, z_, y_,
-    #                             state_dict, config, experiment_name, device, normal_eval=True, eval_vc=False) # produce normal fully activated images
+    activation_extract(G, D, E, G_ema, fixed_x, fixed_y_of_x, z_, y_,
+                                state_dict, config, experiment_name, device, normal_eval=True, eval_vc=False, return_mask=True) # produce normal fully activated images
     
 def main():
     # parse command line and run

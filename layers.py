@@ -14,7 +14,7 @@ from torch.autograd import Variable
 
 from sync_batchnorm import SynchronizedBatchNorm2d as SyncBN2d
 
-from layers_new import *
+from layer_conv_select import SparseNeuralConv
 
 # Projection of x onto y
 def proj(x, y):

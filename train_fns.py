@@ -48,7 +48,7 @@ def GAN_training_function(G, D, E, GDE, ema, state_dict, config, img_pool):
                 # Cornner case for the last batch
                 if counter >= len(x):
                     break
-                D_fake, D_real = GDE(x[counter], y[counter], state_dict['itr'], img_pool, train_G=False,
+                D_fake, D_real = GDE(x[counter], y[counter], config, state_dict['itr'], img_pool, train_G=False,
                                     split_D=config['split_D'])
                 # Compute components of D's loss, average them, and divide by
                 # the number of gradient accumulations
@@ -83,21 +83,27 @@ def GAN_training_function(G, D, E, GDE, ema, state_dict, config, img_pool):
             if counter >= len(x):
                     break
             # print("---------------------- counter {} ---------------".format(counter))
-            D_fake, _, G_z, mu, log_var, weights_TTs, mask_x_all = GDE(x[counter], y[counter], state_dict['itr'], img_pool, train_G=True, split_D=config['split_D'], return_G_z=True)
+            output = GDE(x[counter], y[counter], config, state_dict['itr'], img_pool, train_G=True, split_D=config['split_D'], return_G_z=True)
+            D_fake = output[0]
+            G_z = output[2]
+            mu, log_var = output[3], output[4]
+            
+            # print("checkpoint==========================")
             G_loss = losses.generator_loss(
                 D_fake) / float(config['num_G_accumulations'])
             VAE_recon_loss = losses.vae_recon_loss(G_z, x[counter])
             VAE_kld_loss = losses.vae_kld_loss(mu, log_var, config['clip'])
-            GE_loss = G_loss + VAE_recon_loss * config['lambda_vae_recon'] + VAE_kld_loss * config['lambda_vae_kld'] + \
-                            weights_TTs.mean() * config['lambda_spatial_transform_weights']
+            GE_loss = G_loss + VAE_recon_loss * config['lambda_vae_recon'] + VAE_kld_loss * config['lambda_vae_kld']
+                            # weights_TTs.mean() * config['lambda_spatial_transform_weights']
                             
-            log_loss_str = f"GE_loss {GE_loss.item()}; VAE_recon_loss {VAE_recon_loss.item()}; VAE_kld_loss {VAE_kld_loss.item()}; weights_TTs {weights_TTs.mean().item()}; "
-            
+            # log_loss_str = f"GE_loss {GE_loss.item()}; VAE_recon_loss {VAE_recon_loss.item()}; VAE_kld_loss {VAE_kld_loss.item()}; weights_TTs {weights_TTs.mean().item()}; "
+            log_loss_str = f"GE_loss {GE_loss.item()}; VAE_recon_loss {VAE_recon_loss.item()}; VAE_kld_loss {VAE_kld_loss.item()}"
+
             # only if mask is not None
-            if mask_x_all[0] is not None:
-                mask_x_loss = losses.mask_loss(mask_x_all, complement_weight=config['lambda_mask_loss_weights_complement'], contrastive_weight=config['lambda_mask_loss_weights_contrast'])
-                GE_loss += mask_x_loss
-                log_loss_str += f"mask_loss {mask_x_loss} "
+            # if mask_x_all[0] is not None:
+            #     mask_x_loss = losses.mask_loss(mask_x_all, complement_weight=config['lambda_mask_loss_weights_complement'], contrastive_weight=config['lambda_mask_loss_weights_contrast'])
+            #     GE_loss += mask_x_loss
+            #     log_loss_str += f"mask_loss {mask_x_loss} "
             # print(f"weights_TTs {weights_TTs.item()}")
             # logout str
             print(log_loss_str)
@@ -170,27 +176,21 @@ def save_and_sample(G, D, E, G_ema, fixed_x, fixed_y, z_, y_,
                 _, fixed_z, _ = [i.detach() for i in nn.parallel.data_parallel(E, fixed_x)]
             else:
                 fixed_z, _, _ =  [i.detach() for i in nn.parallel.data_parallel(E, fixed_x)]
-            # fixed_z = fixed_z.detach()
             print("fixed_z: ", fixed_z.shape)
             print("fixed_y: ", fixed_y.shape)
-        
-            # fixed_Gz = nn.parallel.data_parallel(
-            #     which_G, (fixed_z, which_G.shared(fixed_y), int(1 / config['sparse_decay_rate']) + 100, False))
-            # # detach
-            # fixed_Gz = fixed_Gz.detach()
+
             output = nn.parallel.data_parallel(
-                    which_G, (fixed_z, which_G.shared(fixed_y), state_dict['itr']))
-            # if (not config['no_adaptive_tau']) and (state_dict['itr'] * config['sparse_decay_rate'] < 1.1):
-            #     fixed_Gz_train = nn.parallel.data_parallel(
-            #         which_G, (fixed_z, which_G.shared(fixed_y), state_dict['itr'])).detach()
-            if type(output) == tuple:
-                fixed_Gz = output[0].detach() 
-                mask_x_all = [item.detach() for item in output[2]] # [[n, k, h, w],...,]
-            else:
-                fixed_Gz = output.detach() 
+                    which_G, (fixed_z, which_G.shared(fixed_y), config, state_dict['itr']))
+            
+            fixed_Gz = output[0].detach()
+            if config['no_sparsity']:
+                mask_x_all = []
+            # else:
+            #     mask_x_all = [item.detach() for item in output[1]] # [[n, k, h, w],...,]
+
         else:
             fixed_z, _, _ = E(fixed_x)
-            fixed_Gz, intermed_activation = which_G(fixed_z, which_G.shared(fixed_y), int(1 / config['sparse_decay_rate']) + 100, True)
+            fixed_Gz, output_dict = which_G(fixed_z, which_G.shared(fixed_y), int(1 / config['sparse_decay_rate']) + 100, True)
             if (not config['no_adaptive_tau']) and (state_dict['itr'] * config['sparse_decay_rate'] < 1.1):
                 fixed_Gz_train = which_G(fixed_z, which_G.shared(fixed_y), state_dict['itr'])
             # detach
@@ -208,35 +208,36 @@ def save_and_sample(G, D, E, G_ema, fixed_x, fixed_y, z_, y_,
     torchvision.utils.save_image(fixed_Gz, image_filename,
                                  nrow=int(fixed_Gz.shape[0] ** 0.5), normalize=True)
 
-    for layers in range(len(mask_x_all)):
-        layer_map_name = os.path.join(save_dir, f"layer_{layers}_mask.jpg")
-        mask_i = mask_x_all[layers].float().cpu() # [n, k, h_m, w_m]
-        n, k, h, w = mask_i.shape
-        # mask_i dot product
-        mask_i_TT = torch.matmul(mask_i.view(n, k, -1), torch.transpose(mask_i.view(n, k, -1), 1, 2)) # n, k, k
-        mask_i_TT = mask_i_TT.unsqueeze(1).repeat(1, 3, 1, 1) # n, 3, k, k
-        cov_name = os.path.join(save_dir, f"layer_{layers}_mask_cov.jpg")
-        torchvision.utils.save_image(mask_i_TT, cov_name, nrow=int(fixed_Gz.shape[0] ** 0.5), normalize=True)
-        print(f"saved {cov_name}...")
-        # # upsample latent map to real map
-        # assert h % h_m == 0, f"mask {h_m}x{h_m} is not a factor of h {h}x{h}"
-        # scale_factor = h // h_m
-        # mask_i = F.interpolate(mask_i, scale_factor=scale_factor) # n, k, h, w
+    # if True and mask_x_all:
+    #     for layers in range(len(mask_x_all)):
+    #         layer_map_name = os.path.join(save_dir, f"layer_{layers}_mask.jpg")
+    #         mask_i = mask_x_all[layers].float().cpu() # [n, k, h_m, w_m]
+    #         n, k, h, w = mask_i.shape
+    #         # mask_i dot product
+    #         mask_i_TT = torch.matmul(mask_i.view(n, k, -1), torch.transpose(mask_i.view(n, k, -1), 1, 2)) # n, k, k
+    #         mask_i_TT = mask_i_TT.unsqueeze(1).repeat(1, 3, 1, 1) # n, 3, k, k
+    #         cov_name = os.path.join(save_dir, f"layer_{layers}_mask_cov.jpg")
+    #         torchvision.utils.save_image(mask_i_TT, cov_name, nrow=int(fixed_Gz.shape[0] ** 0.5), normalize=True)
+    #         print(f"saved {cov_name}...")
+    #         # # upsample latent map to real map
+    #         # assert h % h_m == 0, f"mask {h_m}x{h_m} is not a factor of h {h}x{h}"
+    #         # scale_factor = h // h_m
+    #         # mask_i = F.interpolate(mask_i, scale_factor=scale_factor) # n, k, h, w
 
-        mask_sum = mask_i.sum(1, keepdim=True).repeat(1, 3, 1, 1) # n, 3, h, w
-        
-        mask_i = mask_i.view(n, k, 1, h, w).repeat(1, 1, 3, 1, 1) # n, k, 3, h, w
+    #         mask_sum = mask_i.sum(1, keepdim=True).repeat(1, 3, 1, 1) # n, 3, h, w
+            
+    #         mask_i = mask_i.view(n, k, 1, h, w).repeat(1, 1, 3, 1, 1) # n, k, 3, h, w
 
-        
-        
-        # print(f"fixed_Gz {fixed_Gz.unsqueeze(1).shape}")
-        print(f"mask_sum { mask_sum.unsqueeze(1).shape}")
-        print(f"mask_i {mask_i.shape}")
-        # mask_img = torch.cat([fixed_Gz.float().cpu().unsqueeze(1), mask_sum.unsqueeze(1), mask_i], dim=1) # n, k+2, 3, h, w
-        mask_img = torch.cat([mask_sum.unsqueeze(1), mask_i], dim=1) # n, k+2, 3, h, w
-        torchvision.utils.save_image(mask_img.view(-1, 3, h, w), layer_map_name, nrow=k+1, normalize=True)
-        
-        # TODO: why the mask looks all the same for every images? Is the latent code all the same? for different n? should you use vae? 
+            
+            
+    #         # print(f"fixed_Gz {fixed_Gz.unsqueeze(1).shape}")
+    #         print(f"mask_sum { mask_sum.unsqueeze(1).shape}")
+    #         print(f"mask_i {mask_i.shape}")
+    #         # mask_img = torch.cat([fixed_Gz.float().cpu().unsqueeze(1), mask_sum.unsqueeze(1), mask_i], dim=1) # n, k+2, 3, h, w
+    #         mask_img = torch.cat([mask_sum.unsqueeze(1), mask_i], dim=1) # n, k+2, 3, h, w
+    #         torchvision.utils.save_image(mask_img.view(-1, 3, h, w), layer_map_name, nrow=k+1, normalize=True)
+            
+            # TODO: why the mask looks all the same for every images? Is the latent code all the same? for different n? should you use vae? 
 
 
 

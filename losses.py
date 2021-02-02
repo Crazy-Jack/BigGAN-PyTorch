@@ -34,7 +34,7 @@ def loss_hinge_gen(dis_fake):
 def vae_recon_loss(G_z, x):
     """vae reconstruction and kld loss"""
     # reconstruction
-    recon_loss = F.mse_loss(G_z, x)
+    recon_loss = F.l1_loss(G_z, x)
     # print(f"chcek inside losses {type(recon_loss)} {recon_loss} {recon_loss.item()}")
     return recon_loss
 

@@ -1,6 +1,7 @@
 import numpy as np
 import math
 import functools
+from itertools import repeat
 
 import torch
 import torch.nn as nn
@@ -10,6 +11,7 @@ import torch.nn.functional as F
 from torch.nn import Parameter as P
 import torchvision.models as vision_models
 from torchsummary import summary
+
 
 import layers
 from sync_batchnorm import SynchronizedBatchNorm2d as SyncBatchNorm2d
@@ -76,7 +78,8 @@ class Generator(nn.Module):
                  G_init='ortho', skip_init=False, no_optim=False,
                  G_param='SN', norm_style='bn', sparsity_resolution='', sparsity_ratio='', no_sparsity=True, mask_base=1e-2,
                  sparsity_mode="spread", sparse_decay_rate=1e-4, no_adaptive_tau=False, local_reduce_factor=4, test_layer=-1, 
-                 test_target_block="", select_index=-1, gumbel_temperature=1.0, **kwargs):
+                 test_target_block="", select_index=-1, gumbel_temperature=1.0, 
+                 conv_select_kernel_size=5, vc_dict_size=150, sparse_vc_interaction_num=4, **kwargs):
         super(Generator, self).__init__()
         # Channel width mulitplier
         self.ch = G_ch
@@ -125,9 +128,13 @@ class Generator(nn.Module):
         self.local_reduce_factor = local_reduce_factor
         self.test_layer = None if test_layer == -1 else test_layer
         self.test_target_block = None if test_target_block == "" else [int(i) for i in test_target_block.split("_")]
-        self.select_index = select_index # for eval single vc
+        self.select_index = [int(i) for i in select_index.split("_")] if "_" in select_index else int(select_index) # for eval single vc
         self.gumbel_temperature = gumbel_temperature
-        
+
+        # conv select
+        self.conv_select_kernel_size = conv_select_kernel_size
+        self.vc_dict_size = vc_dict_size
+        self.sparse_vc_interaction_num = sparse_vc_interaction_num
         # Architecture dict
         self.arch = G_arch(self.ch, self.attention, sparsity_resolution=self.sparsity_resolution, \
                                 sparsity_ratio=self.sparsity_ratio, no_sparsity=self.no_sparsity)[resolution]
@@ -283,6 +290,47 @@ class Generator(nn.Module):
                                                                             self.arch['resolution'][index], vc_go_sparse=True, \
                                                                             spatial_implicit_comb_sparse_weight=True, 
                                                                             mask_reconstruct=True)]
+                    elif self.sparsity_mode == 'conv_sparse_vc_recover':
+                        print('Adding conv_sparse_vc_recover layer in G at resolution %d ... ' % 
+                            self.arch['resolution'][index])
+                        self.conv_sparse_mode = "1.0"
+                        self.blocks[-1] += [layers.Sparsify_ch(sparse_percent),
+                                            layers.SparseNeuralConv(sparse_percent, self.arch['out_channels'][index], \
+                                            self.arch['resolution'][index], kernel_size=self.conv_select_kernel_size, \
+                                            vc_dict_size=self.vc_dict_size)]
+                    elif self.sparsity_mode == 'conv_sparse_vc_recover_no_vcattention':
+                        print('Adding conv_sparse_vc_recover_no_vcattention layer in G at resolution %d ... ' % 
+                            self.arch['resolution'][index])
+                        self.conv_sparse_mode = "1.0"
+                        self.blocks[-1] += [layers.Sparsify_ch(sparse_percent),
+                                            layers.SparseNeuralConv(sparse_percent, self.arch['out_channels'][index], \
+                                            self.arch['resolution'][index], kernel_size=self.conv_select_kernel_size, \
+                                            vc_dict_size=self.vc_dict_size, no_attention=True)]
+                    elif self.sparsity_mode == 'conv_sparse_vc_recover_no_sparse':
+                        print('Adding conv_sparse_vc_recover_no_sparse layer in G at resolution %d ... ' % 
+                            self.arch['resolution'][index])
+                        self.conv_sparse_mode = "1.0"
+                        self.blocks[-1] += [layers.SparseNeuralConv(sparse_percent, self.arch['out_channels'][index], \
+                                            self.arch['resolution'][index], kernel_size=self.conv_select_kernel_size, \
+                                            vc_dict_size=self.vc_dict_size)]
+                    elif self.sparsity_mode == 'conv_sparse_vc_recover_no_sparse_noattention':
+                        print('Adding conv_sparse_vc_recover_no_sparse_noattention layer in G at resolution %d ... ' % 
+                            self.arch['resolution'][index])
+                        self.conv_sparse_mode = "1.0"
+                        self.blocks[-1] += [layers.SparseNeuralConv(sparse_percent, self.arch['out_channels'][index], \
+                                            self.arch['resolution'][index], kernel_size=self.conv_select_kernel_size, \
+                                            vc_dict_size=self.vc_dict_size, no_attention_select=True)]
+
+                    elif 'conv_sparse_vc_recover_no_sparse_mode_' in self.sparsity_mode:
+                        print(f'Adding {self.sparsity_mode} layer in G at resolution %d ... ' % 
+                            self.arch['resolution'][index])
+                        self.conv_sparse_mode = self.sparsity_mode.split("_")[-1]
+                        self.blocks[-1] += [layers.SparseNeuralConv(sparse_percent, self.arch['out_channels'][index], \
+                                            self.arch['resolution'][index], kernel_size=self.conv_select_kernel_size, \
+                                            vc_dict_size=self.vc_dict_size, 
+                                            mode=self.conv_sparse_mode,
+                                            sparse_vc_interaction=self.sparse_vc_interaction_num)]
+                    
                     else:
                         raise NotImplementedError(f"Sparsity Mode Invalid: {self.sparsity_mode}")
 
@@ -346,7 +394,7 @@ class Generator(nn.Module):
     # already been passed through G.shared to enable easy class-wise
     # interpolation later. If we passed in the one-hot and then ran it through
     # G.shared in this forward function, it would be harder to handle.
-    def forward(self, z, y, iter_num, y_origin=None, return_inter_activation=False, device='cuda', normal_eval=True, eval_vc=False):
+    def forward(self, z, y, iter_num, y_origin=None, return_inter_activation=False, device='cuda', normal_eval=True, eval_vc=False, return_mask=False):
         # If hierarchical, concatenate zs and ys
         if self.hier:
             zs = torch.split(z, self.z_chunk_size, 1)
@@ -370,6 +418,10 @@ class Generator(nn.Module):
         # spatial transform weight regularization
         weight_TTs = 0
         mask_x_all = []
+        prob_vects = []
+        previous_prob_vects = []
+        affinity_map = []
+
         # Loop over blocks
         for index, blocklist in enumerate(self.blocks):
             # Second inner loop in case block has multiple layers
@@ -411,26 +463,44 @@ class Generator(nn.Module):
                     else:
                         h, weight_TT, mask_x = block(h, device=device, class_info=class_info)
                     
-                    
                     weight_TTs += weight_TT
                     mask_x_all.append(mask_x)
+                elif block.myid == "conv_sparse_vc_recover":
+                    if eval_vc and (self.test_layer == index) and (not normal_eval):
+                        print(f"testing layer {index} ")
+                        h, (mask_x, prob_vector, previous_prob_vector, origin_map) = block(h, eval_=True, select_index=self.select_index)
+                        
+                    else:
+                        if self.conv_sparse_mode == '1.0':
+                            h, (mask_x, prob_vector, previous_prob_vector, origin_map) = block(h)
+                            mask_x_all.append(mask_x)
+                            prob_vects.append(prob_vector)
+                            previous_prob_vects.append(previous_prob_vector)
+                            affinity_map.append(origin_map)
+                        elif float(self.conv_sparse_mode) >= 2.0:
+                            h, _ = block(h)
                 else:
                     h = block(h, ys[index])
     
                 # impose sparsity constraint for the activation
                 # if index == 0:
                 #     h = layers.sparsify_layer(h, sparsity=sparsity, device=device)
-
+                
                 if return_inter_activation:
                     out = h.detach()
                     intermediates["{}-{}".format(index, block_idx)] = out
                     print("Get activation from block {}-{} : {} ----------- ".format(index, block_idx, out.shape))
         
+        # output dict
+        
         # Apply batchnorm-relu-conv-tanh at output
         if return_inter_activation:
-            return torch.tanh(self.output_layer(h)), intermediates, weight_TTs
-        else:
-            return torch.tanh(self.output_layer(h)), weight_TTs, mask_x_all
+            return torch.tanh(self.output_layer(h)), intermediates
+        
+        if return_mask:
+            return torch.tanh(self.output_layer(h)), (mask_x_all, prob_vects, previous_prob_vects, affinity_map)
+
+        return torch.tanh(self.output_layer(h)), None
 
 
 # Discriminator architecture, same paradigm as G's above
@@ -603,7 +673,7 @@ class G_D_E(nn.Module):
         self.D = D
         self.E = E 
 
-    def forward(self, x, y, iter_num, img_pool, train_G=False, return_G_z=False,
+    def forward(self, x, y, config, iter_num, img_pool, train_G=False, return_G_z=False,
                 split_D=False, verbose=False):
         # If training G, enable grad tape
         with torch.set_grad_enabled(train_G):
@@ -618,7 +688,14 @@ class G_D_E(nn.Module):
                 print("y", y.shape)
                 print("self.G.shared(y)", self.G.shared(y).shape)
                 print("z", z.shape)
-            G_z, weights_TTs, mask_x = self.G(z, self.G.shared(y), iter_num, y_origin=y)
+            output = self.G(z, self.G.shared(y), iter_num, y_origin=y)
+            G_z = output[0]
+            if not config['no_sparsity']:
+                pass
+                # weight_TTs = output[1]
+                # mask_x_all = output[2]
+                weight_TTs, mask_x_all = None, None
+
             if not train_G:
                 if img_pool:
                     G_z = img_pool.query(G_z, y) # when train discriminator, use buffered generated image to avoid mode collapes, not when train_G
@@ -646,7 +723,10 @@ class G_D_E(nn.Module):
                 return torch.split(D_out, [G_z.shape[0], x.shape[0]])
             else:
                 D_fake, D_real = torch.split(D_out, [G_z.shape[0], x.shape[0]])
-                return D_fake, D_real, G_z, mean, logvar, weights_TTs, mask_x
+                if config['no_sparsity']:
+                    return D_fake, D_real, G_z, mean, logvar
+                else:
+                    return D_fake, D_real, G_z, mean, logvar, weight_TTs, mask_x_all
 
 
 

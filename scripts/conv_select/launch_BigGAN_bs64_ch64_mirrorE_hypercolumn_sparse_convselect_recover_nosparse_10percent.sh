@@ -1,9 +1,9 @@
 #!/bin/bash
 python ../../train.py \
 --data_root /user_data/tianqinl/Dataset \
---dataset CelebA --parallel --shuffle  --num_workers 32 --batch_size 30 \
---num_G_accumulations 2 --num_D_accumulations 2 \
---num_D_steps 1 --G_lr 1e-4 --D_lr 4e-4 --E_lr 1e-4 --D_B2 0.999 --G_B2 0.999 --E_B2 0.999 \
+--dataset Mysmall_128 --parallel --shuffle  --num_workers 32 --batch_size 36 \
+--num_G_accumulations 3 --num_D_accumulations 3 \
+--num_D_steps 1 --G_lr 1e-5 --D_lr 4e-5 --E_lr 1e-5 --D_B2 0.999 --G_B2 0.999 --E_B2 0.999 \
 --lambda_vae_kld 1e-3 --lambda_vae_recon 1 \
 --G_attn 8_16_32_64 --D_attn 64 \
 --G_nl inplace_relu --D_nl inplace_relu \
@@ -18,8 +18,8 @@ python ../../train.py \
 --use_multiepoch_sampler \
 --pbar tqdm \
 --inference_nosample \
---experiment_name CelebA_single_layer_sparse_conv_selection_vc_recover \
---sparsity_resolution 16 --sparsity_ratio 10 \
+--experiment_name hypercolumn_sparse_conv_sparse_vc_recover_nosparse_10percent \
+--sparsity_resolution 16_32 --sparsity_ratio 10_10 \
 --save_weights \
 --encoder Resnet-18 \
 --sparsity_mode conv_sparse_vc_recover_no_sparse \
