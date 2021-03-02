@@ -14,15 +14,18 @@ python ../../train.py \
 --hier --dim_z 120 --shared_dim 128 \
 --G_eval_mode \
 --G_ch 96 --D_ch 96 \
---test_every 2000 --save_img_every 20 --save_model_every 100 --num_best_copies 5 --num_save_copies 1 --seed 0 \
+--test_every 2000 --save_img_every 1 --save_model_every 1000000 --num_best_copies 5 --num_save_copies 1 --seed 0 \
 --use_multiepoch_sampler \
 --pbar tqdm \
 --inference_nosample \
---experiment_name baseline_noselection_64ch \
---save_weights \
+--experiment_name test_hypercolumn_sparse_conv_sparse_vc_recover_mode_2.0 \
+--sparsity_resolution 16 --sparsity_ratio 10 \
 --encoder Resnet-18 \
+--sparsity_mode conv_sparse_vc_recover_no_sparse_mode_2.0 \
 --sparse_decay_rate 1e-3 \
 --no_adaptive_tau \
---vc_dict_size 1000 \
---no_sparsity \
-# --resume \
+--sparse_vc_interaction_num 20 \
+--vc_dict_size 5000 \
+--num_epochs 1000 \
+--resume \
+--stop_gradient

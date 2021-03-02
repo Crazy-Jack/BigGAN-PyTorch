@@ -18,11 +18,19 @@ python ../../train.py \
 --use_multiepoch_sampler \
 --pbar tqdm \
 --inference_nosample \
---experiment_name baseline_noselection_64ch \
+--experiment_name hypercolumn_sparse_conv_sparse_vc_recover_mode_2.3 \
+--sparsity_resolution 16 --sparsity_ratio 10 \
 --save_weights \
 --encoder Resnet-18 \
+--sparsity_mode conv_sparse_vc_recover_no_sparse_mode_2.3 \
 --sparse_decay_rate 1e-3 \
 --no_adaptive_tau \
---vc_dict_size 1000 \
---no_sparsity \
+--sparse_vc_interaction_num 20 \
+--vc_dict_size 5000 \
+--num_epochs 1000 \
+--patchGAN \
 # --resume \
+
+### LOG ###
+# in 2.3 (compare with 2.0):
+# use patch discriminator

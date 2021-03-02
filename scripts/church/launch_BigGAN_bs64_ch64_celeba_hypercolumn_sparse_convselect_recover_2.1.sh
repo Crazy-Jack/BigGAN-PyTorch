@@ -1,7 +1,7 @@
 #!/bin/bash
 python ../../train.py \
 --data_root /user_data/tianqinl/Dataset \
---dataset CelebA --parallel --shuffle  --num_workers 32 --batch_size 36 \
+--dataset Church --parallel --shuffle  --num_workers 32 --batch_size 36 \
 --num_G_accumulations 3 --num_D_accumulations 3 \
 --num_D_steps 1 --G_lr 1e-5 --D_lr 4e-5 --E_lr 1e-5 --D_B2 0.999 --G_B2 0.999 --E_B2 0.999 \
 --lambda_vae_kld 1e-3 --lambda_vae_recon 10 \
@@ -18,11 +18,18 @@ python ../../train.py \
 --use_multiepoch_sampler \
 --pbar tqdm \
 --inference_nosample \
---experiment_name baseline_noselection_64ch \
+--experiment_name hypercolumn_sparse_conv_sparse_vc_recover_mode_2.1 \
+--sparsity_resolution 16 --sparsity_ratio 10 \
 --save_weights \
 --encoder Resnet-18 \
+--sparsity_mode conv_sparse_vc_recover_no_sparse_mode_2.1 \
 --sparse_decay_rate 1e-3 \
 --no_adaptive_tau \
---vc_dict_size 1000 \
---no_sparsity \
+--sparse_vc_interaction_num 0 \
+--vc_dict_size 5000 \
+--num_epochs 1000 \
 # --resume \
+
+### LOG ###
+# difference comparing to 2.0 is:
+# use no sparse vc interaction

@@ -65,8 +65,12 @@ def GAN_training_function(G, D, E, GDE, ema, state_dict, config, img_pool):
                 # Debug print to indicate we're using ortho reg in D.
                 print('using modified ortho reg in D')
                 utils.ortho(D, config['D_ortho'])
-
-            D.optim.step()
+            
+            # stop gradient for testing purpose
+            if config['stop_gradient']:
+                print("!!! D is not optimized since you turn on `stop_gradient`!!!!!!")
+            else:
+                D.optim.step()
 
         # Optionally toggle "requires_grad"
         if config['toggle_grads']:
@@ -87,7 +91,8 @@ def GAN_training_function(G, D, E, GDE, ema, state_dict, config, img_pool):
             D_fake = output[0]
             G_z = output[2]
             mu, log_var = output[3], output[4]
-            
+            if len(output) == 6:
+                G_additional = output[5]
             # print("checkpoint==========================")
             G_loss = losses.generator_loss(
                 D_fake) / float(config['num_G_accumulations'])
@@ -97,16 +102,18 @@ def GAN_training_function(G, D, E, GDE, ema, state_dict, config, img_pool):
                             # weights_TTs.mean() * config['lambda_spatial_transform_weights']
                             
             # log_loss_str = f"GE_loss {GE_loss.item()}; VAE_recon_loss {VAE_recon_loss.item()}; VAE_kld_loss {VAE_kld_loss.item()}; weights_TTs {weights_TTs.mean().item()}; "
-            log_loss_str = f"GE_loss {GE_loss.item()}; VAE_recon_loss {VAE_recon_loss.item()}; VAE_kld_loss {VAE_kld_loss.item()}"
+            log_loss_str = f"GE_loss {GE_loss.item()}; VAE_recon_loss {VAE_recon_loss.item()}; VAE_kld_loss {VAE_kld_loss.item()} "
 
-            # only if mask is not None
-            # if mask_x_all[0] is not None:
-            #     mask_x_loss = losses.mask_loss(mask_x_all, complement_weight=config['lambda_mask_loss_weights_complement'], contrastive_weight=config['lambda_mask_loss_weights_contrast'])
-            #     GE_loss += mask_x_loss
-            #     log_loss_str += f"mask_loss {mask_x_loss} "
-            # print(f"weights_TTs {weights_TTs.item()}")
-            # logout str
+            # add G_additional loss
+            if len(output) == 6:
+                G_additional_loss = config['lambda_g_additional'] * G_additional.sum()
+                GE_loss += G_additional_loss
+                log_loss_str += f"G_additional {G_additional_loss.item()}"
+            
+            # print out loss
             print(log_loss_str)
+            
+            # optimization
             GE_loss.backward()
             counter += 1
 
@@ -118,8 +125,13 @@ def GAN_training_function(G, D, E, GDE, ema, state_dict, config, img_pool):
             # Don't ortho reg shared, it makes no sense. Really we should blacklist any embeddings for this
             utils.ortho(G, config['G_ortho'],
                         blacklist=[param for param in G.shared.parameters()])
-        G.optim.step()
-        E.optim.step()
+        
+        # stop gradient for testing purpose
+        if config['stop_gradient']:
+            print("!!! G and E is not optimized since you turn on `stop_gradient`!!!!!!")
+        else:
+            G.optim.step()
+            E.optim.step()
 
         # If we have an ema, update it, regardless of if we test with it or not
         if config['ema']:

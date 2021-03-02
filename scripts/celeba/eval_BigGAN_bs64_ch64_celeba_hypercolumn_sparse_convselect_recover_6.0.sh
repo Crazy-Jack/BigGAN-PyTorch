@@ -1,8 +1,8 @@
 #!/bin/bash
-python ../../train.py \
+python ../../eval_single_vc.py \
 --data_root /user_data/tianqinl/Dataset \
---dataset CelebA --parallel --shuffle  --num_workers 32 --batch_size 36 \
---num_G_accumulations 3 --num_D_accumulations 3 \
+--dataset CelebA --shuffle --num_workers 32 --batch_size 10 \
+--num_G_accumulations 1 --num_D_accumulations 1 \
 --num_D_steps 1 --G_lr 1e-5 --D_lr 4e-5 --E_lr 1e-5 --D_B2 0.999 --G_B2 0.999 --E_B2 0.999 \
 --lambda_vae_kld 1e-3 --lambda_vae_recon 10 \
 --G_attn 8_16_32_64 --D_attn 64 \
@@ -18,11 +18,21 @@ python ../../train.py \
 --use_multiepoch_sampler \
 --pbar tqdm \
 --inference_nosample \
---experiment_name baseline_noselection_64ch \
---save_weights \
+--experiment_name hypercolumn_sparse_conv_sparse_vc_recover_mode_6.0 \
+--sparsity_resolution 32 --sparsity_ratio 10 \
 --encoder Resnet-18 \
+--sparsity_mode conv_sparse_vc_recover_no_sparse_mode_6.0 \
 --sparse_decay_rate 1e-3 \
 --no_adaptive_tau \
+--sparse_vc_interaction_num 2 \
 --vc_dict_size 1000 \
---no_sparsity \
-# --resume \
+--num_epochs 1000 \
+--sparse_vc_prob_interaction 2 \
+--lambda_g_additional 100 \
+--patchGAN \
+--test_all \
+--resume \
+
+### LOG ###
+# in 5.1 (compare with 5.0):
+# plan sparse layer on 32x32 layer

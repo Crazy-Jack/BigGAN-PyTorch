@@ -18,11 +18,19 @@ python ../../train.py \
 --use_multiepoch_sampler \
 --pbar tqdm \
 --inference_nosample \
---experiment_name baseline_noselection_64ch \
+--experiment_name hypercolumn_sparse_conv_sparse_vc_recover_mode_3.0 \
+--sparsity_resolution 16 --sparsity_ratio 10 \
 --save_weights \
 --encoder Resnet-18 \
+--sparsity_mode conv_sparse_vc_recover_no_sparse_mode_3.0 \
 --sparse_decay_rate 1e-3 \
 --no_adaptive_tau \
---vc_dict_size 1000 \
---no_sparsity \
+--sparse_vc_interaction_num 2 \
+--vc_dict_size 5000 \
+--num_epochs 1000 \
+--sparse_vc_prob_interaction 2 \
 # --resume \
+
+### LOG ###
+# in 3.0 (compare with 2.0):
+# adding attention to influence the vc selection process

@@ -79,7 +79,8 @@ class Generator(nn.Module):
                  G_param='SN', norm_style='bn', sparsity_resolution='', sparsity_ratio='', no_sparsity=True, mask_base=1e-2,
                  sparsity_mode="spread", sparse_decay_rate=1e-4, no_adaptive_tau=False, local_reduce_factor=4, test_layer=-1, 
                  test_target_block="", select_index=-1, gumbel_temperature=1.0, 
-                 conv_select_kernel_size=5, vc_dict_size=150, sparse_vc_interaction_num=4, **kwargs):
+                 conv_select_kernel_size=5, vc_dict_size=150, sparse_vc_interaction_num=4, sparse_vc_prob_interaction=4, 
+                 test_all=False, **kwargs):
         super(Generator, self).__init__()
         # Channel width mulitplier
         self.ch = G_ch
@@ -135,11 +136,13 @@ class Generator(nn.Module):
         self.conv_select_kernel_size = conv_select_kernel_size
         self.vc_dict_size = vc_dict_size
         self.sparse_vc_interaction_num = sparse_vc_interaction_num
+        self.sparse_vc_prob_interaction = sparse_vc_prob_interaction
         # Architecture dict
         self.arch = G_arch(self.ch, self.attention, sparsity_resolution=self.sparsity_resolution, \
                                 sparsity_ratio=self.sparsity_ratio, no_sparsity=self.no_sparsity)[resolution]
         print("G arch sparsity: ", self.arch['sparsity'])
         self.mask_base = mask_base
+        self.test_all = test_all
 
         # If using hierarchical latents, adjust z
         if self.hier:
@@ -329,7 +332,9 @@ class Generator(nn.Module):
                                             self.arch['resolution'][index], kernel_size=self.conv_select_kernel_size, \
                                             vc_dict_size=self.vc_dict_size, 
                                             mode=self.conv_sparse_mode,
-                                            sparse_vc_interaction=self.sparse_vc_interaction_num)]
+                                            sparse_vc_interaction=self.sparse_vc_interaction_num, 
+                                            sparse_vc_prob_interaction=self.sparse_vc_prob_interaction,
+                                            test=self.test_all)]
                     
                     else:
                         raise NotImplementedError(f"Sparsity Mode Invalid: {self.sparsity_mode}")
@@ -421,6 +426,7 @@ class Generator(nn.Module):
         prob_vects = []
         previous_prob_vects = []
         affinity_map = []
+        entropys = 0
 
         # Loop over blocks
         for index, blocklist in enumerate(self.blocks):
@@ -477,11 +483,29 @@ class Generator(nn.Module):
                             prob_vects.append(prob_vector)
                             previous_prob_vects.append(previous_prob_vector)
                             affinity_map.append(origin_map)
-                        elif float(self.conv_sparse_mode) >= 2.0:
+                        elif float(self.conv_sparse_mode) >= 2.0 and float(self.conv_sparse_mode) < 5.0:
                             h, _ = block(h)
+                        elif float(self.conv_sparse_mode) >= 5.0:
+                            h, entropy = block(h)
+                            entropys += entropy
                 else:
-                    h = block(h, ys[index])
-    
+                    # one hack
+                    if self.test_all:
+                        print(f"##################################################### ys[index] {type(ys[index])}")
+                        print(f"##################################################### ys[index] {ys[index].shape}")
+                        target_num = h.shape[0]
+                        y_hack = torch.gather(ys[index], dim=0, index=torch.zeros((target_num, ys[index].shape[1])).long().cuda())
+                        print(f"y_hack {y_hack.shape}")
+                        print(f"block id {block.myid}")
+                        if block.myid in ['atten']:
+                            h = block(h, y_hack)
+                        else:
+                            h = block(h, y_hack, nobn=False)
+                        
+                    else:
+                        h = block(h, ys[index])
+
+                    
                 # impose sparsity constraint for the activation
                 # if index == 0:
                 #     h = layers.sparsify_layer(h, sparsity=sparsity, device=device)
@@ -499,7 +523,10 @@ class Generator(nn.Module):
         
         if return_mask:
             return torch.tanh(self.output_layer(h)), (mask_x_all, prob_vects, previous_prob_vects, affinity_map)
-
+        # adding maximum entropy to encourage exploration
+        if entropys != 0:
+            return torch.tanh(self.output_layer(h)), entropys
+        
         return torch.tanh(self.output_layer(h)), None
 
 
@@ -540,7 +567,7 @@ class Discriminator(nn.Module):
                  num_D_SVs=1, num_D_SV_itrs=1, D_activation=nn.ReLU(inplace=False),
                  D_lr=2e-4, D_B1=0.0, D_B2=0.999, adam_eps=1e-8,
                  SN_eps=1e-12, output_dim=1, D_mixed_precision=False, D_fp16=False,
-                 D_init='ortho', skip_init=False, D_param='SN', **kwargs):
+                 D_init='ortho', skip_init=False, D_param='SN', patchGAN=False, **kwargs):
         super(Discriminator, self).__init__()
         # Width multiplier
         self.ch = D_ch
@@ -566,6 +593,7 @@ class Discriminator(nn.Module):
         self.fp16 = D_fp16
         # Architecture
         self.arch = D_arch(self.ch, self.attention)[resolution]
+        self.patchGAN = patchGAN # bool indicates whether use patchGAN or not
 
         # Which convs, batchnorms, and linear layers to use
         # No option to turn off SN in D right now
@@ -603,9 +631,17 @@ class Discriminator(nn.Module):
                                      for block in self.blocks])
         # Linear output layer. The output dimension is typically 1, but may be
         # larger if we're e.g. turning this into a VAE with an inference output
-        self.linear = self.which_linear(
-            self.arch['out_channels'][-1], output_dim)
-        # Embedding for projection discrimination
+        if not self.patchGAN:
+            # normal activation
+            self.linear = self.which_linear(
+                self.arch['out_channels'][-1], output_dim)
+            # Embedding for projection discrimination
+        else:
+            # patch GAN, impose a conv layer to 1 channel with tanh activation
+            self.patch_conv = self.which_conv(self.arch['out_channels'][-1], 1)
+            # TODO: add class conditional for patch GAN
+            
+
         self.embed = self.which_embedding(
             self.n_classes, self.arch['out_channels'][-1])
 
@@ -654,12 +690,19 @@ class Discriminator(nn.Module):
         for index, blocklist in enumerate(self.blocks):
             for block in blocklist:
                 h = block(h)
-        # Apply global sum pooling as in SN-GAN
-        h = torch.mean(self.activation(h), [2, 3])
-        # Get initial class-unconditional output
-        out = self.linear(h)
-        # Get projection of final featureset onto class vectors and add to evidence
-        out = out + torch.mean(self.embed(y) * h, 1, keepdim=True)
+        if not self.patchGAN:
+            # Apply global sum pooling as in SN-GAN
+            h = torch.mean(self.activation(h), [2, 3])
+            # Get initial class-unconditional output
+            out = self.linear(h)
+            # Get projection of final featureset onto class vectors and add to evidence
+            out = out + torch.mean(self.embed(y) * h, 1, keepdim=True)
+        else:
+            # print(f"Output patch size before {h.shape}")
+            # Return a patch of activation 
+            h = self.patch_conv(self.activation(h)) # [n, 1, h, w]
+            # print(f"Output patch size {h.shape}")
+            out = h 
         return out
 
 # Parallelized G_D to minimize cross-gpu communication
@@ -690,6 +733,9 @@ class G_D_E(nn.Module):
                 print("z", z.shape)
             output = self.G(z, self.G.shared(y), iter_num, y_origin=y)
             G_z = output[0]
+            G_additional = None
+            if output[1] and (len(output)==2):
+                G_additional = output[1]
             if not config['no_sparsity']:
                 pass
                 # weight_TTs = output[1]
@@ -725,6 +771,8 @@ class G_D_E(nn.Module):
                 D_fake, D_real = torch.split(D_out, [G_z.shape[0], x.shape[0]])
                 if config['no_sparsity']:
                     return D_fake, D_real, G_z, mean, logvar
+                elif G_additional:
+                    return D_fake, D_real, G_z, mean, logvar, G_additional
                 else:
                     return D_fake, D_real, G_z, mean, logvar, weight_TTs, mask_x_all
 

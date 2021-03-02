@@ -56,7 +56,7 @@ def activation_extract(G, D, E, G_ema, fixed_x, fixed_y, z_, y_,
             print("fixed_y: ", fixed_y.shape)
         
             output = nn.parallel.data_parallel(
-                which_G, (fixed_z, which_G.shared(fixed_y), int(1 / config['sparse_decay_rate']) + 100), repeat(False), repeat(device), normal_eval, eval_vc)
+                which_G, (fixed_z, which_G.shared(fixed_y), int(1 / config['sparse_decay_rate']) + 100), repeat(False), repeat(device), repeat(normal_eval), repeat(eval_vc))
             print("output.shape", len(output))
             fixed_Gz = output[0]
             
@@ -336,13 +336,13 @@ def run(config):
         if config['ema']:
             G_ema.eval()
     # vc visualization
-    # print("VC visualization ===============")
-    activation_extract(G, D, E, G_ema, fixed_x, fixed_y_of_x, z_, y_,
-                                state_dict, config, experiment_name, device, normal_eval=False, eval_vc=True, return_mask=False)
+    # # print("VC visualization ===============")
+    # activation_extract(G, D, E, G_ema, fixed_x, fixed_y_of_x, z_, y_,
+    #                             state_dict, config, experiment_name, device, normal_eval=False, eval_vc=True, return_mask=False)
     # normal activation
     print("Normal activation ===============")
     activation_extract(G, D, E, G_ema, fixed_x, fixed_y_of_x, z_, y_,
-                                state_dict, config, experiment_name, device, normal_eval=True, eval_vc=False, return_mask=True) # produce normal fully activated images
+                                state_dict, config, experiment_name, device, normal_eval=True, eval_vc=False, return_mask=False) # produce normal fully activated images
     
 def main():
     # parse command line and run

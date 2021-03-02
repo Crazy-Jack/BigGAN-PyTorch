@@ -148,6 +148,14 @@ def prepare_parser():
         '--lambda_mask_loss_weights_contrast', type=float, default=1,
         help="weight for regularizing the mask for contrastive"
     )
+    parser.add_argument(
+        '--lambda_g_additional', type=float, default=1,
+        help="weight for regularizing the additional output of G"
+    )
+    parser.add_argument(
+        '--patchGAN', action='store_true', default=False,
+        help="indicating if using patchGAN"
+    )
 
     ### Model init stuff ###
     parser.add_argument(
@@ -484,6 +492,12 @@ def prepare_parser():
         help="number of self attention block after selection in conv selection module"
     )
 
+    parser.add_argument(
+        '--sparse_vc_prob_interaction', type=int, default=4,
+        help="number of self attention block after selection in conv selection module"
+    )
+    
+
     ### Encoder ###
     parser.add_argument(
         '--encoder', type=str, default='Resnet-50',
@@ -500,6 +514,12 @@ def prepare_parser():
     ### Eval stuff
     parser.add_argument("--img_index", type=int, default=31,
         help="index of images in a batch to see the activation")
+    parser.add_argument("--stop_gradient", action='store_true', default=False,
+        help="stop gradient switch, turn on then there's no gradient, very dangerous")
+    
+    parser.add_argument("--test_all", action='store_true', default=False,
+        help="indicating if test all batch vc in 5.0 + models")
+
 
     return parser
 
@@ -551,28 +571,32 @@ dset_dict = {'I32': dset.ImageFolder, 'I64': dset.ImageFolder,
              'I32_hdf5': dset.ILSVRC_HDF5, 'I64_hdf5': dset.ILSVRC_HDF5,
              'I128_hdf5': dset.ILSVRC_HDF5, 'I256_hdf5': dset.ILSVRC_HDF5,
              'C10': dset.CIFAR10, 'C100': dset.CIFAR100,
-             'CelebA': dset.ImageFolder}
+             'CelebA': dset.ImageFolder,
+             'Church': dset.ImageFolder,}
 imsize_dict = {'I32': 32, 'I32_hdf5': 32,
                'I64': 64, 'I64_hdf5': 64,
                'I128': 128, 'I128_hdf5': 128,
                'I256': 256, 'I256_hdf5': 256,
                'C10': 32, 'C100': 32,
                'Mysmall_128': 128,
-               'CelebA': 128}
+               'CelebA': 128,
+               'Church': 128}
 root_dict = {'I32': 'ImageNet', 'I32_hdf5': 'ILSVRC32.hdf5',
              'I64': 'ImageNet', 'I64_hdf5': 'ILSVRC64.hdf5',
              'I128': 'ImageNet', 'I128_hdf5': 'ILSVRC128.hdf5',
              'I256': 'ImageNet', 'I256_hdf5': 'ILSVRC256.hdf5',
              'C10': 'cifar', 'C100': 'cifar',
              'Mysmall_128': 'small_dataset',
-             'CelebA': 'CelebA'}
+             'CelebA': 'CelebA',
+             'Church': 'Church'}
 nclass_dict = {'I32': 1000, 'I32_hdf5': 1000,
                'I64': 1000, 'I64_hdf5': 1000,
                'I128': 1000, 'I128_hdf5': 1000,
                'I256': 1000, 'I256_hdf5': 1000,
                'C10': 10, 'C100': 100,
                'Mysmall_128': 3,
-               'CelebA': 1}
+               'CelebA': 1,
+               'Church': 1}
 # Number of classes to put per sample sheet
 classes_per_sheet_dict = {'I32': 50, 'I32_hdf5': 50,
                           'I64': 50, 'I64_hdf5': 50,
@@ -580,7 +604,8 @@ classes_per_sheet_dict = {'I32': 50, 'I32_hdf5': 50,
                           'I256': 20, 'I256_hdf5': 20,
                           'C10': 10, 'C100': 100,
                           'Mysmall_128': 3,
-                          'CelebA': 1}
+                          'CelebA': 1,
+                          'Church': 1}
 activation_dict = {'inplace_relu': nn.ReLU(inplace=True),
                    'relu': nn.ReLU(inplace=False),
                    'ir': nn.ReLU(inplace=True), }

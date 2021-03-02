@@ -15,6 +15,7 @@ from torch.autograd import Variable
 from sync_batchnorm import SynchronizedBatchNorm2d as SyncBN2d
 
 from layer_conv_select import SparseNeuralConv
+from layer_conv_select_multiple_path import SparseNeuralConvMulti
 
 # Projection of x onto y
 def proj(x, y):
@@ -421,13 +422,19 @@ class GBlock(nn.Module):
         # upsample layers
         self.upsample = upsample
 
-    def forward(self, x, y):
-        h = self.activation(self.bn1(x, y))
+    def forward(self, x, y, nobn=False):
+        if nobn:
+            h = self.activation(x)
+        else:
+            h = self.activation(self.bn1(x, y))
         if self.upsample:
             h = self.upsample(h)
             x = self.upsample(x)
         h = self.conv1(h)
-        h = self.activation(self.bn2(h, y))
+        if nobn:
+            h = self.activation(x)
+        else:
+            h = self.activation(self.bn2(h, y))
         h = self.conv2(h)
         if self.learnable_sc:
             x = self.conv_sc(x)
