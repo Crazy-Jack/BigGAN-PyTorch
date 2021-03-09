@@ -220,7 +220,8 @@ class GenerateMask_3_0(nn.Module):
         - when generating the mask, do normalization of the dot product to get the real similarity
         - do self attention helped vc selection before output
     """
-    def __init__(self, ch, resolution, or_cadidate=1000, sparse_vc_prob_interaction=20, vc_type="parts", tmp=0.05, reg_entropy=False, warmup=5436000, no_map=False):
+    def __init__(self, ch, resolution, or_cadidate=1000, sparse_vc_prob_interaction=20, vc_type="parts", tmp=0.05, reg_entropy=False, warmup=5436000, no_map=False, \
+                 pull_vc_activation=False, replace_activation=False):
         super(GenerateMask_3_0, self).__init__()
         self.conv = nn.Conv2d(ch, or_cadidate, kernel_size=1, padding=0, bias=False)
         self.sparse_vc_prob_interaction = sparse_vc_prob_interaction
@@ -238,12 +239,18 @@ class GenerateMask_3_0(nn.Module):
             print("reg_entropy", reg_entropy)
 
             self.register_buffer("vc_stats", torch.FloatTensor([0.] * self.or_cadidate))
+        self.pull_vc_activation = pull_vc_activation # False, or (0.1) indicating the beta value, (0) means beta is 0 but the error for stored vc is not zero
+        print(f"pull vc_activation {self.pull_vc_activation}")
+        self.replace_activation = replace_activation
 
     def forward(self, x, test=False, device="cuda"):
         """
         input x: [n, L, c, kernel, kernel]
         output mask: [n * L, 1, kernel, kernel]
         """
+        # additional term to regularize
+        additional_loss = []
+
         n, L, c, h, w = x.shape
         x_reshape = x.reshape(-1, c, h, w) # [n * L, c, h, w]
         x_norm = (x_reshape ** 2).sum((1)).sqrt() # [n * L, h, w]
@@ -301,7 +308,18 @@ class GenerateMask_3_0(nn.Module):
         vc = torch.gather(weights.squeeze(2).squeeze(2), 0, max_ch_index.expand(max_ch_index.size(0), c)) # [n * L, c]
 
         # intepolate vc - activation
-        integrate_activation_vc = max_activation * max_similarity_value + vc * (1 - max_similarity_value) # integrate_activation_vc = activation * sim + vc * (1 - sim): [n * L, c]
+        if self.replace_activation:
+            integrate_activation_vc = vc
+        else:
+            integrate_activation_vc = max_activation * max_similarity_value + vc * (1 - max_similarity_value) # integrate_activation_vc = activation * sim + vc * (1 - sim): [n * L, c]
+        if self.pull_vc_activation:
+            # pull vc towards activation
+            beta = self.pull_vc_activation[0]
+            # error for vc
+            error_vc = ((max_activation.detach() - vc) ** 2).mean()
+            error_activation = beta * ((max_activation - vc.detach()) ** 2).mean()
+            error_pull_vc_activation = error_vc + error_activation
+            additional_loss.append(error_pull_vc_activation)
 
         # print("-----------------CHECKPOINT ---------------")
         if test:
@@ -319,23 +337,34 @@ class GenerateMask_3_0(nn.Module):
             np.save("/lab_data/leelab/tianqinl/BigGAN-PyTorch/scripts/celeba/vc_stats_6.0.pt", self.vc_stats.cpu().numpy())
             integrate_activation_vc, sim_map_max = test_vc(integrate_activation_vc, max_ch_index, sim_map_max, L, c, h, w)
 
+        
         # maximize negative entropy of the y
         if self.reg_entropy:
             p = self.vc_stats / self.vc_stats.sum()
-            print(f"VC concepts prob: mean {p.mean().item():5f} std {p.std().item():5f}; <0.5 {len(torch.where(p<0.5)[0])}; \
-                        <0.05 {len(torch.where(p<0.05)[0])} ; <0.01 {len(torch.where(p<0.01)[0])} ; \
-                        <0.005 {len(torch.where(p<0.005)[0])} \
-                        <0.00001 {len(torch.where(p<0.00001)[0])}")
+            print(f"VC concepts prob: mean {p.mean().item():5f} std {p.std().item():5f}; <0.5 {len(torch.where(p<0.5)[0])};"
+                        f"<0.05 {len(torch.where(p<0.05)[0])} ; <0.01 {len(torch.where(p<0.01)[0])} ;" 
+                        f"<0.005 {len(torch.where(p<0.005)[0])};"
+                        f"<0.001 {len(torch.where(p<0.001)[0])};"
+                        f"<0.0005 {len(torch.where(p<0.0005)[0])};")
             neg_entropy_vc_stats = - Categorical(probs = p).entropy() # negative entropy
+            additional_loss.append(neg_entropy_vc_stats)
             # print(f"Entropy {neg_entropy_vc_stats}")
+
+        # integrate additional loss
+        if len(additional_loss) > 0:
+            additional = additional_loss[0]
+            if len(additional_loss) > 1:
+                for addi_loss in additional_loss[1:]:
+                    additional += addi_loss
+        else:
+            additional = None 
 
         if self.no_map:
             sim_map_max = None
 
         # regularize entropy term
-        if self.reg_entropy:
-            
-            return integrate_activation_vc, sim_map_max, neg_entropy_vc_stats # [n * L, c], [n * L, 1, h, w], scaler
+        if additional:
+            return integrate_activation_vc, sim_map_max, additional # [n * L, c], [n * L, 1, h, w], scaler
 
         return integrate_activation_vc, sim_map_max # [n * L, c], [n * L, 1, h, w]
 

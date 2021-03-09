@@ -10,7 +10,7 @@ import torch.optim as optim
 import torch.nn.functional as F
 from torch.nn import Parameter as P
 import torchvision.models as vision_models
-from torchsummary import summary
+# from torchsummary import summary
 
 
 import layers
