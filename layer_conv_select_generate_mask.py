@@ -315,6 +315,8 @@ class GenerateMask_3_0(nn.Module):
                     uniques_t[i.item()] += 1
             print(f"One batch {uniques_t}")
             print(f"sim score {max_similarity_value.mean()}")
+            print(f"Sorted vc stats {torch.sort(self.vc_stats, descending=True)[0][:20]}")
+            np.save("/lab_data/leelab/tianqinl/BigGAN-PyTorch/scripts/celeba/vc_stats_6.0.pt", self.vc_stats.cpu().numpy())
             integrate_activation_vc, sim_map_max = test_vc(integrate_activation_vc, max_ch_index, sim_map_max, L, c, h, w)
 
         # maximize negative entropy of the y
