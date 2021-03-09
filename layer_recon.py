@@ -35,6 +35,7 @@ class NeuralConvRecon(nn.Module):
         elif self.mode == "deconv":
             # deconvolutionally fill in the holes
             # upsample
+            # use use a weight to expand the area
 
             # 
             pass
@@ -60,16 +61,20 @@ class NeuralConvRecon(nn.Module):
         output: [n, c, h, w]
         """
         n, L, c = x.shape
-        x = self.linear1(x.view(-1, c)) # [n * L, c] -> [n * L, self.linear1_out // 2]
-        x = self.relu1(x)
-        x = self.linear2(x) # [n * L, self.linear1_out]
-        x = x.view(n * L, -1, self.kernel_size, self.kernel_size) # [n * L, ch // kernel_size, kernel_size, kernel_size]
-        x = self.conv(x) # [n * L, ch, kernel_size, kernel_size]
-        x = x.view(n, L, c * self.kernel_size * self.kernel_size)
-        x = torch.transpose(x, 1, 2) # [n, c * kernel * kernel, L]
-        x = self.fold(x) # n, c, h, w
+        if self.mode == "mlp":
+            x = self.linear1(x.view(-1, c)) # [n * L, c] -> [n * L, self.linear1_out // 2]
+            x = self.relu1(x)
+            x = self.linear2(x) # [n * L, self.linear1_out]
+            x = x.view(n * L, -1, self.kernel_size, self.kernel_size) # [n * L, ch // kernel_size, kernel_size, kernel_size]
+            x = self.conv(x) # [n * L, ch, kernel_size, kernel_size]
+            x = x.view(n, L, c * self.kernel_size * self.kernel_size)
+            x = torch.transpose(x, 1, 2) # [n, c * kernel * kernel, L]
+            x = self.fold(x) # n, c, h, w
 
-        return x
+            return x
+        elif self.mode == "deconv":
+            return x
+
 
 
 class NeuralNormalRecon(nn.Module):

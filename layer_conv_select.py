@@ -23,11 +23,12 @@ from layer_recon import *
 class NeuralConvSelection(nn.Module):
     """conv select"""
     def __init__(self, ch, resolution, kernel_size, vc_dict_size=100, no_attention=False, hard_selection=False, which_mask="1.0", \
-                    sparse_vc_prob_interaction=4, vc_type="parts", test=False):
+                    sparse_vc_prob_interaction=4, vc_type="parts", test=False, pull_vc_activation=0.25):
         super(NeuralConvSelection, self).__init__()
         self.kernel_size = kernel_size
         self.which_mask = which_mask
         self.test = test 
+        self.pull_vc_activation = pull_vc_activation
         if which_mask == '1.0':
             self.generate_mask = GenerateMask(ch, resolution=kernel_size, or_cadidate=vc_dict_size, no_attention=no_attention) # shared generate mask module, generate a weighted mask for 
         elif float(which_mask) >= 2.0 and (float(which_mask) < 3.0):
@@ -57,7 +58,13 @@ class NeuralConvSelection(nn.Module):
                 nn.Tanh()
             )
         elif float(which_mask) >= 6.0 and (float(which_mask) < 7.0):
-            self.generate_mask = GenerateMask_3_0(ch, resolution=kernel_size, or_cadidate=vc_dict_size, sparse_vc_prob_interaction=sparse_vc_prob_interaction, 
+            if float(which_mask) == 6.1:
+                self.generate_mask = GenerateMask_3_0(ch, resolution=kernel_size, or_cadidate=vc_dict_size, \
+                                                    sparse_vc_prob_interaction=sparse_vc_prob_interaction, \
+                                                    warmup=54360, 
+                                                    vc_type=vc_type, reg_entropy=True, no_map=True, pull_vc_activation=[self.pull_vc_activation,])
+            else:
+                self.generate_mask = GenerateMask_3_0(ch, resolution=kernel_size, or_cadidate=vc_dict_size, sparse_vc_prob_interaction=sparse_vc_prob_interaction, 
                                                     vc_type=vc_type, reg_entropy=True, no_map=True) # regularize the negative entropy of vc prob
         else:
             raise NotImplementedError(f"which_mask {which_mask} is not implemented in NeuralConvSelection module")
