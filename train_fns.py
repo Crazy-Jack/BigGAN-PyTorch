@@ -26,6 +26,7 @@ def GAN_training_function(G, D, E, GDE, ema, state_dict, config):
         # How many chunks to split x and y into?
         x = torch.split(x, config['batch_size'])
         y = torch.split(y, config['batch_size'])
+        # print("split - x {}; y {}".format(x[0].shape, y[0].shape))
         counter = 0
 
         # Optionally toggle D and G's "require_grad"
@@ -33,20 +34,23 @@ def GAN_training_function(G, D, E, GDE, ema, state_dict, config):
             utils.toggle_grad(D, True)
             utils.toggle_grad(G, False)
             utils.toggle_grad(E, False)
-
+        # print("inside train fns: config['num_D_steps']", config['num_D_steps'])
         for step_index in range(config['num_D_steps']):
             # If accumulating gradients, loop multiple times before an optimizer step
             D.optim.zero_grad()
+            # print("---------------------- counter {} ---------------".format(counter))
+            # print("x[counter] {}; y[counter] {}".format(x[counter].shape, y[counter].shape))
             for accumulation_index in range(config['num_D_accumulations']):
                 D_fake, D_real = GDE(x[counter], y[counter], train_G=False,
                                     split_D=config['split_D'])
 
                 # Compute components of D's loss, average them, and divide by
                 # the number of gradient accumulations
-                D_loss_real, D_loss_fake = losses.discriminator_loss(
-                    D_fake, D_real)
+                D_loss_real, D_loss_fake = losses.discriminator_loss( \
+                    D_fake, D_real, config['clip'])
                 D_loss = (D_loss_real + D_loss_fake) / \
                     float(config['num_D_accumulations'])
+                print("D_loss: {}; D_fake {}, D_real {}".format(D_loss.item(), D_loss_fake.item(), D_loss_real.item()))
                 D_loss.backward()
                 counter += 1
 
@@ -70,13 +74,14 @@ def GAN_training_function(G, D, E, GDE, ema, state_dict, config):
         # If accumulating gradients, loop multiple times
         counter = 0 # reset counter for data split
         for accumulation_index in range(config['num_G_accumulations']):
-
+            # print("---------------------- counter {} ---------------".format(counter))
             D_fake, _, G_z, mu, log_var = GDE(x[counter], y[counter], train_G=True, split_D=config['split_D'], return_G_z=True)
             G_loss = losses.generator_loss(
                 D_fake) / float(config['num_G_accumulations'])
             VAE_recon_loss = losses.vae_recon_loss(G_z, x[counter])
-            VAE_kld_loss = losses.vae_kld_loss(mu, log_var)
+            VAE_kld_loss = losses.vae_kld_loss(mu, log_var, config['clip'])
             GE_loss = G_loss + VAE_recon_loss * config['lambda_vae_recon'] + VAE_kld_loss * config['lambda_vae_kld']
+            print("GE_loss {}, Gloss {}; VAE_recon_loss {}; VAE_kld_loss {}".format(GE_loss.item(), G_loss.item(), VAE_recon_loss.item(), VAE_kld_loss.item()))
             GE_loss.backward()
             counter += 1
 
@@ -112,7 +117,7 @@ def GAN_training_function(G, D, E, GDE, ema, state_dict, config):
 
 
 def save_and_sample(G, D, E, G_ema, fixed_x, fixed_y, z_, y_,
-                    state_dict, config, experiment_name, save_weights=False):
+                    state_dict, config, experiment_name, save_weights):
     # Use EMA G for samples or non-EMA?
     which_G = G_ema if config['ema'] and config['use_ema'] else G
 
@@ -143,13 +148,15 @@ def save_and_sample(G, D, E, G_ema, fixed_x, fixed_y, z_, y_,
         if config['parallel']:
             print("fixed_x: ", fixed_x.shape)
             if config['inference_nosample']:
-                _, fixed_z, _ = nn.parallel.data_parallel(E, fixed_x)
+                _, fixed_z, _ = [i.detach() for i in nn.parallel.data_parallel(E, fixed_x)]
             else:
-                fixed_z, _, _ =  nn.parallel.data_parallel(E, fixed_x)
+                fixed_z, _, _ =  [i.detach() for i in nn.parallel.data_parallel(E, fixed_x)]
+            # fixed_z = fixed_z.detach()
             print("fixed_z: ", fixed_z.shape)
             print("fixed_y: ", fixed_y.shape)
             fixed_Gz = nn.parallel.data_parallel(
-                which_G, (fixed_z, which_G.shared(fixed_y)))
+                which_G, (fixed_z, which_G.shared(fixed_y))).detach()
+            # fixed_Gz = fixed_Gz.detach()
         else:
             fixed_z, _, _ = E(fixed_x)
             fixed_Gz = which_G(fixed_z, which_G.shared(fixed_y))

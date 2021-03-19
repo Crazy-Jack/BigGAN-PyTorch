@@ -69,7 +69,8 @@ def run(config):
     # Next, build the model
     G = model.Generator(**config).to(device)
     D = model.Discriminator(**config).to(device)
-    E = model.ImgEncoder(**config).to(device)
+    # E = model.ImgEncoder(**config).to(device)
+    E = model.Encoder(**config).to(device)
 
     # If using EMA, prepare it
     if config['ema']:
@@ -196,7 +197,7 @@ def run(config):
                 x, y = x.to(device).half(), y.to(device)
             else:
                 x, y = x.to(device), y.to(device)
-
+            # print("x {}, y {} input".format(x.shape, y.shape))
             # gan and vae
             metrics = train(x, y)
             train_log.log(itr=int(state_dict['itr']), **metrics)
@@ -220,7 +221,7 @@ def run(config):
                     if config['ema']:
                         G_ema.eval()
                 train_fns.save_and_sample(G, D, E, G_ema, fixed_x, fixed_y_of_x, z_, y_,
-                                          state_dict, config, experiment_name)
+                                          state_dict, config, experiment_name, save_weights=config['save_weights'])
 
             # # Test every specified interval
             # if not (state_dict['itr'] % config['test_every']):
