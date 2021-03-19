@@ -1,14 +1,17 @@
 ''' train_fns.py
 Functions for the main loop of training different conditional image models
 '''
+import os
+
 import torch
 import torch.nn as nn
 import torchvision
-import os
+import torch.nn.functional as F
+
 
 import utils
 import losses
-
+from plot_inter_activation import plot_channel_activation
 
 # Dummy training function for debugging
 def dummy_training_function():
@@ -17,7 +20,7 @@ def dummy_training_function():
     return train
 
 
-def GAN_training_function(G, D, E, GDE, ema, state_dict, config):
+def GAN_training_function(G, D, E, GDE, ema, state_dict, config, img_pool):
     def train(x, y):
         G.optim.zero_grad()
         D.optim.zero_grad()
@@ -26,7 +29,12 @@ def GAN_training_function(G, D, E, GDE, ema, state_dict, config):
         # How many chunks to split x and y into?
         x = torch.split(x, config['batch_size'])
         y = torch.split(y, config['batch_size'])
+<<<<<<< HEAD
         # print("split - x {}; y {}".format(x[0].shape, y[0].shape))
+=======
+        # print("inside fns", x)
+        print("split - x {}".format(len(x)))
+>>>>>>> e2dbbce3788f03cabc7202a1882f6452fd73e92c
         counter = 0
 
         # Optionally toggle D and G's "require_grad"
@@ -41,9 +49,11 @@ def GAN_training_function(G, D, E, GDE, ema, state_dict, config):
             # print("---------------------- counter {} ---------------".format(counter))
             # print("x[counter] {}; y[counter] {}".format(x[counter].shape, y[counter].shape))
             for accumulation_index in range(config['num_D_accumulations']):
-                D_fake, D_real = GDE(x[counter], y[counter], train_G=False,
+                # Cornner case for the last batch
+                if counter >= len(x):
+                    break
+                D_fake, D_real = GDE(x[counter], y[counter], config, state_dict['itr'], img_pool, train_G=False,
                                     split_D=config['split_D'])
-
                 # Compute components of D's loss, average them, and divide by
                 # the number of gradient accumulations
                 D_loss_real, D_loss_fake = losses.discriminator_loss( \
@@ -59,8 +69,12 @@ def GAN_training_function(G, D, E, GDE, ema, state_dict, config):
                 # Debug print to indicate we're using ortho reg in D.
                 print('using modified ortho reg in D')
                 utils.ortho(D, config['D_ortho'])
-
-            D.optim.step()
+            
+            # stop gradient for testing purpose
+            if config['stop_gradient']:
+                print("!!! D is not optimized since you turn on `stop_gradient`!!!!!!")
+            else:
+                D.optim.step()
 
         # Optionally toggle "requires_grad"
         if config['toggle_grads']:
@@ -74,14 +88,45 @@ def GAN_training_function(G, D, E, GDE, ema, state_dict, config):
         # If accumulating gradients, loop multiple times
         counter = 0 # reset counter for data split
         for accumulation_index in range(config['num_G_accumulations']):
+<<<<<<< HEAD
             # print("---------------------- counter {} ---------------".format(counter))
             D_fake, _, G_z, mu, log_var = GDE(x[counter], y[counter], train_G=True, split_D=config['split_D'], return_G_z=True)
+=======
+            if counter >= len(x):
+                    break
+            # print("---------------------- counter {} ---------------".format(counter))
+            output = GDE(x[counter], y[counter], config, state_dict['itr'], img_pool, train_G=True, split_D=config['split_D'], return_G_z=True)
+            D_fake = output[0]
+            G_z = output[2]
+            mu, log_var = output[3], output[4]
+            if len(output) == 6:
+                G_additional = output[5]
+            # print("checkpoint==========================")
+>>>>>>> e2dbbce3788f03cabc7202a1882f6452fd73e92c
             G_loss = losses.generator_loss(
                 D_fake) / float(config['num_G_accumulations'])
             VAE_recon_loss = losses.vae_recon_loss(G_z, x[counter])
             VAE_kld_loss = losses.vae_kld_loss(mu, log_var, config['clip'])
             GE_loss = G_loss + VAE_recon_loss * config['lambda_vae_recon'] + VAE_kld_loss * config['lambda_vae_kld']
+<<<<<<< HEAD
             print("GE_loss {}, Gloss {}; VAE_recon_loss {}; VAE_kld_loss {}".format(GE_loss.item(), G_loss.item(), VAE_recon_loss.item(), VAE_kld_loss.item()))
+=======
+                            # weights_TTs.mean() * config['lambda_spatial_transform_weights']
+                            
+            # log_loss_str = f"GE_loss {GE_loss.item()}; VAE_recon_loss {VAE_recon_loss.item()}; VAE_kld_loss {VAE_kld_loss.item()}; weights_TTs {weights_TTs.mean().item()}; "
+            log_loss_str = f"GE_loss {GE_loss.item()}; VAE_recon_loss {VAE_recon_loss.item()}; VAE_kld_loss {VAE_kld_loss.item()} "
+
+            # add G_additional loss
+            if len(output) == 6:
+                G_additional_loss = config['lambda_g_additional'] * G_additional.sum()
+                GE_loss += G_additional_loss
+                log_loss_str += f"G_additional {G_additional_loss.item()}"
+            
+            # print out loss
+            print(log_loss_str)
+            
+            # optimization
+>>>>>>> e2dbbce3788f03cabc7202a1882f6452fd73e92c
             GE_loss.backward()
             counter += 1
 
@@ -93,8 +138,13 @@ def GAN_training_function(G, D, E, GDE, ema, state_dict, config):
             # Don't ortho reg shared, it makes no sense. Really we should blacklist any embeddings for this
             utils.ortho(G, config['G_ortho'],
                         blacklist=[param for param in G.shared.parameters()])
-        G.optim.step()
-        E.optim.step()
+        
+        # stop gradient for testing purpose
+        if config['stop_gradient']:
+            print("!!! G and E is not optimized since you turn on `stop_gradient`!!!!!!")
+        else:
+            G.optim.step()
+            E.optim.step()
 
         # If we have an ema, update it, regardless of if we test with it or not
         if config['ema']:
@@ -117,7 +167,7 @@ def GAN_training_function(G, D, E, GDE, ema, state_dict, config):
 
 
 def save_and_sample(G, D, E, G_ema, fixed_x, fixed_y, z_, y_,
-                    state_dict, config, experiment_name, save_weights):
+                    state_dict, config, experiment_name, img_pool, save_weights):
     # Use EMA G for samples or non-EMA?
     which_G = G_ema if config['ema'] and config['use_ema'] else G
 
@@ -151,45 +201,109 @@ def save_and_sample(G, D, E, G_ema, fixed_x, fixed_y, z_, y_,
                 _, fixed_z, _ = [i.detach() for i in nn.parallel.data_parallel(E, fixed_x)]
             else:
                 fixed_z, _, _ =  [i.detach() for i in nn.parallel.data_parallel(E, fixed_x)]
-            # fixed_z = fixed_z.detach()
             print("fixed_z: ", fixed_z.shape)
             print("fixed_y: ", fixed_y.shape)
-            fixed_Gz = nn.parallel.data_parallel(
-                which_G, (fixed_z, which_G.shared(fixed_y))).detach()
-            # fixed_Gz = fixed_Gz.detach()
+
+            output = nn.parallel.data_parallel(
+                    which_G, (fixed_z, which_G.shared(fixed_y), config, state_dict['itr']))
+            
+            fixed_Gz = output[0].detach()
+            if config['no_sparsity']:
+                mask_x_all = []
+            # else:
+            #     mask_x_all = [item.detach() for item in output[1]] # [[n, k, h, w],...,]
+
         else:
             fixed_z, _, _ = E(fixed_x)
-            fixed_Gz = which_G(fixed_z, which_G.shared(fixed_y))
-    if not os.path.isdir('%s/%s' % (config['samples_root'], experiment_name)):
-        os.mkdir('%s/%s' % (config['samples_root'], experiment_name))
-    image_filename = '%s/%s/fixed_samples%d.jpg' % (config['samples_root'],
-                                                    experiment_name,
-                                                    state_dict['itr'])
+            fixed_Gz, output_dict = which_G(fixed_z, which_G.shared(fixed_y), int(1 / config['sparse_decay_rate']) + 100, True)
+            if (not config['no_adaptive_tau']) and (state_dict['itr'] * config['sparse_decay_rate'] < 1.1):
+                fixed_Gz_train = which_G(fixed_z, which_G.shared(fixed_y), state_dict['itr'])
+            # detach
+            fixed_Gz = fixed_Gz.detach().float().cpu()
+    
+    
 
-    torchvision.utils.save_image(fixed_Gz.float().cpu(), image_filename,
+    
+    n, c, h, w = fixed_Gz.shape
+    # log masks 
+    save_dir = '%s/%s/%s' % (config['samples_root'], experiment_name, state_dict['itr'])
+    os.makedirs(save_dir, exist_ok=True)
+    image_filename = save_dir + '/fixed_samples%d.jpg' % (state_dict['itr'])
+
+    torchvision.utils.save_image(fixed_Gz, image_filename,
                                  nrow=int(fixed_Gz.shape[0] ** 0.5), normalize=True)
 
-    # For now, every time we save, also save sample sheets
-    utils.sample_sheet(which_G,
-                       classes_per_sheet=utils.classes_per_sheet_dict[config['dataset']],
-                       num_classes=config['n_classes'],
-                       samples_per_class=10, parallel=config['parallel'],
-                       samples_root=config['samples_root'],
-                       experiment_name=experiment_name,
-                       folder_number=state_dict['itr'],
-                       z_=z_)
-    # Also save interp sheets
-    for fix_z, fix_y in zip([False, False, True], [False, True, False]):
-        utils.interp_sheet(which_G,
-                           num_per_sheet=16,
-                           num_midpoints=8,
-                           num_classes=config['n_classes'],
-                           parallel=config['parallel'],
-                           samples_root=config['samples_root'],
-                           experiment_name=experiment_name,
-                           folder_number=state_dict['itr'],
-                           sheet_number=0,
-                           fix_z=fix_z, fix_y=fix_y, device='cuda')
+    # if True and mask_x_all:
+    #     for layers in range(len(mask_x_all)):
+    #         layer_map_name = os.path.join(save_dir, f"layer_{layers}_mask.jpg")
+    #         mask_i = mask_x_all[layers].float().cpu() # [n, k, h_m, w_m]
+    #         n, k, h, w = mask_i.shape
+    #         # mask_i dot product
+    #         mask_i_TT = torch.matmul(mask_i.view(n, k, -1), torch.transpose(mask_i.view(n, k, -1), 1, 2)) # n, k, k
+    #         mask_i_TT = mask_i_TT.unsqueeze(1).repeat(1, 3, 1, 1) # n, 3, k, k
+    #         cov_name = os.path.join(save_dir, f"layer_{layers}_mask_cov.jpg")
+    #         torchvision.utils.save_image(mask_i_TT, cov_name, nrow=int(fixed_Gz.shape[0] ** 0.5), normalize=True)
+    #         print(f"saved {cov_name}...")
+    #         # # upsample latent map to real map
+    #         # assert h % h_m == 0, f"mask {h_m}x{h_m} is not a factor of h {h}x{h}"
+    #         # scale_factor = h // h_m
+    #         # mask_i = F.interpolate(mask_i, scale_factor=scale_factor) # n, k, h, w
+
+    #         mask_sum = mask_i.sum(1, keepdim=True).repeat(1, 3, 1, 1) # n, 3, h, w
+            
+    #         mask_i = mask_i.view(n, k, 1, h, w).repeat(1, 1, 3, 1, 1) # n, k, 3, h, w
+
+            
+            
+    #         # print(f"fixed_Gz {fixed_Gz.unsqueeze(1).shape}")
+    #         print(f"mask_sum { mask_sum.unsqueeze(1).shape}")
+    #         print(f"mask_i {mask_i.shape}")
+    #         # mask_img = torch.cat([fixed_Gz.float().cpu().unsqueeze(1), mask_sum.unsqueeze(1), mask_i], dim=1) # n, k+2, 3, h, w
+    #         mask_img = torch.cat([mask_sum.unsqueeze(1), mask_i], dim=1) # n, k+2, 3, h, w
+    #         torchvision.utils.save_image(mask_img.view(-1, 3, h, w), layer_map_name, nrow=k+1, normalize=True)
+            
+            # TODO: why the mask looks all the same for every images? Is the latent code all the same? for different n? should you use vae? 
+
+
+
+    
+    # if (not config['no_adaptive_tau']) and (state_dict['itr'] * config['sparse_decay_rate'] < 1.1):
+    #     image_filename_train = '%s/%s/fixed_samples%d_train.jpg' % (config['samples_root'],
+    #                                                 experiment_name,
+    #                                                 state_dict['itr'])
+
+    #     torchvision.utils.save_image(fixed_Gz_train.float().cpu(), image_filename_train,
+    #                              nrow=int(fixed_Gz_train.shape[0] ** 0.5), normalize=True)
+    # # For now, every time we save, also save sample sheets
+    # utils.sample_sheet(which_G,
+    #                    classes_per_sheet=utils.classes_per_sheet_dict[config['dataset']],
+    #                    num_classes=config['n_classes'],
+    #                    samples_per_class=10, parallel=config['parallel'],
+    #                    samples_root=config['samples_root'],
+    #                    experiment_name=experiment_name,
+    #                    folder_number=state_dict['itr'],
+    #                    z_=z_,
+    #                    iter_num=int(1 / config['sparse_decay_rate']) + 100)
+    # # Also save interp sheets
+    # for fix_z, fix_y in zip([False, False, True], [False, True, False]):
+    #     utils.interp_sheet(which_G,
+    #                        num_per_sheet=16,
+    #                        num_midpoints=8,
+    #                        num_classes=config['n_classes'],
+    #                        parallel=config['parallel'],
+    #                        samples_root=config['samples_root'],
+    #                        experiment_name=experiment_name,
+    #                        folder_number=state_dict['itr'],
+    #                        sheet_number=0,
+    #                        fix_z=fix_z, fix_y=fix_y, device='cuda',
+    #                        iter_num=int(1 / config['sparse_decay_rate']) + 100)
+
+    # plot the intermediate layer activation
+    # plot_channel_activation(intermed_activation, config['img_index'], fixed_Gz[config['img_index']], experiment_name, config, state_dict, config['samples_root'])
+    
+    # Save ImagePool
+    if config['img_pool_size'] != 0:
+        img_pool.save()
 
 
 

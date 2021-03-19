@@ -42,6 +42,7 @@ def find_classes(dir):
 
 
 def make_dataset(dir, class_to_idx):
+    print(f"------------------------------------MAKE DATASET: {dir}")
     images = []
     dir = os.path.expanduser(dir)
     for target in tqdm(sorted(os.listdir(dir))):
@@ -130,6 +131,7 @@ class ImageFolder(data.Dataset):
         self.imgs = imgs
         self.classes = classes
         self.class_to_idx = class_to_idx
+        self.num_class = len(self.classes)
         self.transform = transform
         self.target_transform = target_transform
         self.loader = loader

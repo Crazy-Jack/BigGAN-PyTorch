@@ -2,9 +2,14 @@ weights/
 samples/
 logs/
 imgs/
+buffer/
+evals/
+analysis/
 *imgs.npz
 *inception_moments.npz
 __pycache__*
 *npy
 *.png
 analysis_activation/
+*.pt
+

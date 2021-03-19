@@ -30,9 +30,113 @@ import train_fns
 from sync_batchnorm import patch_replication_callback
 from utils_imgpool import ImagePool
 
+
+
+def activation_extract(G, D, E, G_ema, fixed_x, fixed_y, z_, y_,
+                    state_dict, config, experiment_name, save_weights=False):
+    # Use EMA G for samples or non-EMA?
+    which_G = G_ema if config['ema'] and config['use_ema'] else G
+
+    # Save a random sample sheet with fixed z and y
+    # TODO: change here to encode fixed x into z and feed z with fixed y into G
+    print("check2 ---------------------------")
+    with torch.no_grad():
+        if config['parallel']:
+            print("fixed_x: ", fixed_x.shape)
+            if config['inference_nosample']:
+                _, fixed_z, _ = [i.detach() for i in nn.parallel.data_parallel(E, fixed_x)]
+            else:
+                fixed_z, _, _ =  [i.detach() for i in nn.parallel.data_parallel(E, fixed_x)]
+            # fixed_z = fixed_z.detach()
+            print("fixed_z: ", fixed_z.shape)
+            print("fixed_y: ", fixed_y.shape)
+        
+            fixed_Gz, intermediates = nn.parallel.data_parallel(
+                which_G, (fixed_z, which_G.shared(fixed_y), int(1 / config['sparse_decay_rate']) + 100, True)).detach()
+            
+            if (not config['no_adaptive_tau']) and (state_dict['itr'] * config['sparse_decay_rate'] < 1.1):
+                fixed_Gz_train, intermediates = nn.parallel.data_parallel(
+                    which_G, (fixed_z, which_G.shared(fixed_y), state_dict['itr'], True)).detach()
+        else:
+            fixed_z, _, _ = E(fixed_x)
+            fixed_Gz, intermediates = which_G(fixed_z, which_G.shared(fixed_y), int(1 / config['sparse_decay_rate']) + 100, return_inter_activation=True)
+            if (not config['no_adaptive_tau']) and (state_dict['itr'] * config['sparse_decay_rate'] < 1.1):
+                fixed_Gz_train, intermediates = which_G(fixed_z, which_G.shared(fixed_y), state_dict['itr'], return_inter_activation=True)
+
+    print("check3 -----------------------------")
+    if not os.path.isdir('%s/%s' % (config['evals_root'], experiment_name)):
+        os.mkdir('%s/%s' % (config['evals_root'], experiment_name))
+    image_filename = '%s/%s/test_iter_%s.jpg' % (config['evals_root'],
+                                                    experiment_name,
+                                                    state_dict['itr'])
+    image_origin_filename = '%s/%s/origin_iter_%s.jpg' % (config['evals_root'],
+                                                    experiment_name,
+                                                    state_dict['itr'])
+    activation_filename = '%s/%s/inter_activation_iter_%s.pt' % (config['evals_root'],
+                                                    experiment_name, state_dict['itr'])
+    print("######### save_path #####: ", image_filename)
+    torchvision.utils.save_image(fixed_x.float().cpu(), image_origin_filename,
+                                 nrow=int(fixed_x.shape[0] ** 0.5), normalize=True)
+    torchvision.utils.save_image(fixed_Gz.float().cpu(), image_filename,
+                                 nrow=int(fixed_Gz.shape[0] ** 0.5), normalize=True)
+    torch.save(intermediates, activation_filename)
+
+    return fixed_x.float().cpu(), fixed_Gz.float().cpu(), intermediates
+
+
+
+def plot_channel_activation(intermediates, img_index, img, experiment_name, config, state_dict, save_root):
+    """plot intermediate activation for each channel
+    param: 
+        - intermediates: {layer_index: numpy.array(N, C, H, W)}
+        - img_index: int, between 0 and N
+    """
+    print("Document img examined : img_idx {}")
+    target_img_name = '{}/{}/{}/img_{}_iter_{}_target_.jpg'.format(save_root,
+                                                    experiment_name, state_dict['itr'], 
+                                                    img_index, state_dict['itr'])
+    torchvision.utils.save_image(img, target_img_name, normalize=True)
+
+    for layer_index in intermediates:
+        layer_activation = intermediates[layer_index][img_index].unsqueeze(1) # [C, 1, H, W]
+        C, _, H, W = layer_activation.shape
+        activatity_channels = layer_activation.reshape(C, -1).std(1)
+        sorted_act_index = torch.argsort(activatity_channels, descending=True)
+        sorted_layer_activation = layer_activation[sorted_act_index]
+        activation_visual_name = '%s/%s/%s/img_%s_iter_%s_plot_inter_activation_layer_%s.jpg' % (save_root,
+                                                    experiment_name, state_dict['itr'], img_index, state_dict['itr'], layer_index)
+        print("Ploting (img_idx {}) for layer {} activation shape {}".format(img_index, layer_index, layer_activation.shape))
+        torchvision.utils.save_image(sorted_layer_activation.float(), activation_visual_name,
+                                 nrow=int(layer_activation.shape[0] ** 0.5), normalize=True, padding=1, pad_value=1)
+
+        # sum of channels
+        activation_sum_name = '%s/%s/%s/img_%s_sum_iter_%s_plot_inter_activation_layer_%s.jpg' % (save_root,
+                                                    experiment_name, state_dict['itr'], img_index, state_dict['itr'], layer_index)
+        sum_activation = layer_activation.sum(0)
+        torchvision.utils.save_image(sum_activation.float(), activation_sum_name,
+                                 nrow=int(layer_activation.shape[0] ** 0.5), normalize=True, padding=1, pad_value=0.5)
+
+        # ONE channel activation
+        mean_activation = intermediates[layer_index].mean(0).reshape(C, -1).std(1) 
+        select_one_ch = torch.argsort(mean_activation, descending=True)[0]
+        ## plot all the activation on that channel
+        one_ch_name = '%s/%s/%s/iter_%s_onech_plot_inter_activation_layer_%s.jpg' % (save_root,
+                                                    experiment_name, state_dict['itr'], state_dict['itr'], layer_index)
+        torchvision.utils.save_image(intermediates[layer_index][:, select_one_ch, :, :].unsqueeze(1).float(), one_ch_name,
+                                 nrow=int(intermediates[layer_index].shape[0] ** 0.5), normalize=True, padding=1, pad_value=0.5)
+
+        
+
+        
+
+
+
+
+
+
+
 # The main training file. Config is a dictionary specifying the configuration
 # of this training run.
-
 
 def run(config):
 
@@ -70,13 +174,8 @@ def run(config):
     # Next, build the model
     G = model.Generator(**config).to(device)
     D = model.Discriminator(**config).to(device)
-<<<<<<< HEAD
-    # E = model.ImgEncoder(**config).to(device)
-    E = model.Encoder(**config).to(device)
-=======
     E = model.ImgEncoder(**config).to(device)
     # E = model.Encoder(**config).to(device)
->>>>>>> e2dbbce3788f03cabc7202a1882f6452fd73e92c
 
     # If using EMA, prepare it
     if config['ema']:
@@ -120,21 +219,6 @@ def run(config):
         if config['cross_replica']:
             patch_replication_callback(GDE)
 
-    # Prepare loggers for stats; metrics holds test metrics,
-    # lmetrics holds any desired training metrics.
-    test_metrics_fname = '%s/%s_log.jsonl' % (config['logs_root'],
-                                              experiment_name)
-    train_metrics_fname = '%s/%s' % (config['logs_root'], experiment_name)
-    print('Inception Metrics will be saved to {}'.format(test_metrics_fname))
-    test_log = utils.MetricsLogger(test_metrics_fname,
-                                   reinitialize=(not config['resume']))
-    print('Training Metrics will be saved to {}'.format(train_metrics_fname))
-    train_log = utils.MyLogger(train_metrics_fname,
-                               reinitialize=(not config['resume']),
-                               logstyle=config['logstyle'])
-    # Write metadata
-    utils.write_metadata(config['logs_root'],
-                         experiment_name, config, state_dict)
     # Prepare data; the Discriminator's batch size is all that needs to be passed
     # to the dataloader, as G doesn't require dataloading.
     # Note that at every loader iteration we pass in enough data to complete
@@ -143,10 +227,6 @@ def run(config):
                     * config['num_D_accumulations'])
     loaders, train_dataset = utils.get_data_loaders(**{**config, 'batch_size': D_batch_size,
                                         'start_itr': state_dict['itr']})
-
-    # # Prepare inception metrics: FID and IS
-    # get_inception_metrics = inception_utils.prepare_inception_metrics(
-    #     config['dataset'], config['parallel'], config['no_fid'])
 
     # Prepare noise and randomly sampled label arrays
     # Allow for different batch sizes in G
@@ -189,68 +269,17 @@ def run(config):
 
 
     # print('Beginning training at epoch %f...' % (state_dict['itr'] * D_batch_size / len(train_dataset)))
-    print("Beginning training at Epoch {} (iteration {})".format(state_dict['epoch'], state_dict['itr']))
-    # # Train for specified number of epochs, although we mostly track G iterations.
-    # for epoch in range(state_dict['epoch'], config['num_epochs']):
-    # Which progressbar to use? TQDM or my own?
-    if config['pbar'] == 'mine':
-        pbar = utils.progress(
-            loaders[0], displaytype='s1k' if config['use_multiepoch_sampler'] else 'eta')
-    else:
-        pbar = tqdm(loaders[0])
-    for i, (x, y) in enumerate(pbar):
-        # Increment the iteration counter
-        state_dict['itr'] += 1
-        # Make sure G and D are in training mode, just in case they got set to eval
-        # For D, which typically doesn't have BN, this shouldn't matter much.
-        G.train()
-        D.train()
+    print("Beginning testing at Epoch {} (iteration {})".format(state_dict['epoch'], state_dict['itr']))
+
+    if config['G_eval_mode']:
+        print('Switchin G to eval mode...')
+        G.eval()
         if config['ema']:
-            G_ema.train()
-        if config['D_fp16']:
-            x, y = x.to(device).half(), y.to(device)
-        else:
-            x, y = x.to(device), y.to(device)
-        # print("x {}, y {} input".format(x.shape, y.shape))
-        # gan and vae
-        metrics = train(x, y)
-        train_log.log(itr=int(state_dict['itr']), **metrics)
-
-        # Every sv_log_interval, log singular values
-        if (config['sv_log_interval'] > 0) and (not (state_dict['itr'] % config['sv_log_interval'])):
-            train_log.log(itr=int(state_dict['itr']),
-                            **{**utils.get_SVs(G, 'G'), **utils.get_SVs(D, 'D')})
-
-        # If using my progbar, print metrics.
-        if config['pbar'] == 'mine':
-            print(', '.join(['itr: %d' % state_dict['itr']]
-                            + ['%s : %+4.3f' % (key, metrics[key])
-                                for key in metrics]), end=' ')
-
-        # Save weights and copies as configured at specified interval
-        if (not state_dict['itr'] % config['save_img_every']) or (not state_dict['itr'] % config['save_model_every']):
-            if config['G_eval_mode']:
-                print('Switchin G to eval mode...')
-                G.eval()
-                if config['ema']:
-                    G_ema.eval()
-            save_weights = config['save_weights']
-            if state_dict['itr'] % config['save_model_every']:
-                save_weights = False
-            train_fns.save_and_sample(G, D, E, G_ema, fixed_x, fixed_y_of_x, z_, y_,
-                                        state_dict, config, experiment_name, img_pool, save_weights=save_weights)
-
-        # # Test every specified interval
-        # if not (state_dict['itr'] % config['test_every']):
-        #     if config['G_eval_mode']:
-        #         print('Switchin G to eval mode...')
-        #         G.eval()
-        #     train_fns.test(G, D, G_ema, z_, y_, state_dict, config, sample,
-        #                    get_inception_metrics, experiment_name, test_log)
-        # Increment epoch counter at end of epoch
-        state_dict['epoch'] = state_dict['itr'] * D_batch_size / (len(train_dataset))
-        print("Finished Epoch {} (iteration {})".format(state_dict['epoch'], state_dict['itr']))
-
+            G_ema.eval()
+    fixed_x, fixed_Gz, intermediates = activation_extract(G, D, E, G_ema, fixed_x, fixed_y_of_x, z_, y_,
+                                state_dict, config, experiment_name, save_weights=config['save_weights'])
+    
+    plot_channel_activation(intermediates, config['img_index'], fixed_Gz[config['img_index']], experiment_name, config, state_dict)
 
 def main():
     # parse command line and run
