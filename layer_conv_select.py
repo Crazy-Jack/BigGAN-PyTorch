@@ -63,9 +63,23 @@ class NeuralConvSelection(nn.Module):
                                                     sparse_vc_prob_interaction=sparse_vc_prob_interaction, \
                                                     warmup=54360, 
                                                     vc_type=vc_type, reg_entropy=True, no_map=True, pull_vc_activation=[self.pull_vc_activation,])
+            elif float(which_mask) == 6.2:
+                self.generate_mask = GenerateMask_3_0(ch, resolution=kernel_size, or_cadidate=vc_dict_size, \
+                                                    sparse_vc_prob_interaction=sparse_vc_prob_interaction, \
+                                                    warmup=54360, 
+                                                    vc_type=vc_type, reg_entropy=True, no_map=True, \
+                                                    pull_vc_activation=[self.pull_vc_activation,], replace_activation=True)
             else:
                 self.generate_mask = GenerateMask_3_0(ch, resolution=kernel_size, or_cadidate=vc_dict_size, sparse_vc_prob_interaction=sparse_vc_prob_interaction, 
                                                     vc_type=vc_type, reg_entropy=True, no_map=True) # regularize the negative entropy of vc prob
+        elif float(which_mask) >= 7.0 and (float(which_mask) < 8.0):
+            # condition on vc to force network learn different output
+            if float(which_mask) == 7.0:
+                self.generate_mask = GenerateMask_3_0(ch, resolution=kernel_size, or_cadidate=vc_dict_size, \
+                                                    sparse_vc_prob_interaction=sparse_vc_prob_interaction, \
+                                                    warmup=54360,
+                                                    vc_type=vc_type, reg_entropy=True, no_map=True, pull_vc_activation=[self.pull_vc_activation,])
+            
         else:
             raise NotImplementedError(f"which_mask {which_mask} is not implemented in NeuralConvSelection module")
         

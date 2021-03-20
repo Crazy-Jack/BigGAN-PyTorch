@@ -422,17 +422,3 @@ def test_vc(integrate_activation_vc, max_ch_index, sim_map_max, L, c, h, w):
 
 
 
-            
-
-
-
-    
-    
-
-
-
-
-    
-
-
-
