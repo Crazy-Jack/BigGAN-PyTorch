@@ -23,20 +23,20 @@ for i in activation:
     critic_indx[i] = np.load("critic_idnx_layer_{}.npy".format(i))
 
 
-# print(activation[1].shape)
+# # print(activation[1].shape)
     
-for iter_ in range(1, ITER_NUM + 1):
-    activation_i = np.load(ACTIVATION_PATH.format(iter_), allow_pickle=True).item()
-    for i in activation:
-        C_idx, H_idx, W_idx = critic_indx[i]
-        critic_activation_i = np.abs(activation_i[i])[:, C_idx, H_idx, W_idx] # [BZ, num_critics]
-        critical_activation[i][(iter_ - 1) * BATCH_SIZE : iter_ * BATCH_SIZE] = critic_activation_i # (BZ, num_critics)
-        print("adding for {}: {}".format((iter_ - 1) * BATCH_SIZE, iter_ * BATCH_SIZE))
-    print("Done Loading with iteration {} ---".format(iter_))
+# for iter_ in range(1, ITER_NUM + 1):
+#     activation_i = np.load(ACTIVATION_PATH.format(iter_), allow_pickle=True).item()
+#     for i in activation:
+#         C_idx, H_idx, W_idx = critic_indx[i]
+#         critic_activation_i = np.abs(activation_i[i])[:, C_idx, H_idx, W_idx] # [BZ, num_critics]
+#         critical_activation[i][(iter_ - 1) * BATCH_SIZE : iter_ * BATCH_SIZE] = critic_activation_i # (BZ, num_critics)
+#         print("adding for {}: {}".format((iter_ - 1) * BATCH_SIZE, iter_ * BATCH_SIZE))
+#     print("Done Loading with iteration {} ---".format(iter_))
 
-np.save("critical_activation.npy", critical_activation) # {layer_num: [BZ, num_critics]}
+# np.save("critical_activation.npy", critical_activation) # {layer_num: [BZ, num_critics]}
 
-# critical_activation = np.load("critical_activation.npy", allow_pickle=True)
+critical_activation = np.load("critical_activation.npy", allow_pickle=True).item()
 
 for i in critical_activation: # loop over layers
     for j in range(num_critics):
@@ -51,7 +51,7 @@ for i in critical_activation: # loop over layers
         plt.plot(sorted(critical_activation[i][:, j])[::-1])
         plt.xlabel("picture number")
         plt.ylabel("activation for this neuron")
-        plt.title("activation for one neuron in layer {} ({} % th)".format(i, criticals[j]))
+        plt.title("activation for one neuron in layer {} ({} % th)".format(i, criticals[j] * 100))
         plt.savefig("sorted_activation_per_neurons_layer_{}_num_critic_{}.png".format(i, j))
 
         plt.close()

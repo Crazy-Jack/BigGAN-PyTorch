@@ -29,8 +29,12 @@ def GAN_training_function(G, D, E, GDE, ema, state_dict, config, img_pool):
         # How many chunks to split x and y into?
         x = torch.split(x, config['batch_size'])
         y = torch.split(y, config['batch_size'])
+<<<<<<< HEAD
+        # print("split - x {}; y {}".format(x[0].shape, y[0].shape))
+=======
         # print("inside fns", x)
         print("split - x {}".format(len(x)))
+>>>>>>> e2dbbce3788f03cabc7202a1882f6452fd73e92c
         counter = 0
 
         # Optionally toggle D and G's "require_grad"
@@ -84,6 +88,10 @@ def GAN_training_function(G, D, E, GDE, ema, state_dict, config, img_pool):
         # If accumulating gradients, loop multiple times
         counter = 0 # reset counter for data split
         for accumulation_index in range(config['num_G_accumulations']):
+<<<<<<< HEAD
+            # print("---------------------- counter {} ---------------".format(counter))
+            D_fake, _, G_z, mu, log_var = GDE(x[counter], y[counter], train_G=True, split_D=config['split_D'], return_G_z=True)
+=======
             if counter >= len(x):
                     break
             # print("---------------------- counter {} ---------------".format(counter))
@@ -94,11 +102,15 @@ def GAN_training_function(G, D, E, GDE, ema, state_dict, config, img_pool):
             if len(output) == 6:
                 G_additional = output[5]
             # print("checkpoint==========================")
+>>>>>>> e2dbbce3788f03cabc7202a1882f6452fd73e92c
             G_loss = losses.generator_loss(
                 D_fake) / float(config['num_G_accumulations'])
             VAE_recon_loss = losses.vae_recon_loss(G_z, x[counter])
             VAE_kld_loss = losses.vae_kld_loss(mu, log_var, config['clip'])
             GE_loss = G_loss + VAE_recon_loss * config['lambda_vae_recon'] + VAE_kld_loss * config['lambda_vae_kld']
+<<<<<<< HEAD
+            print("GE_loss {}, Gloss {}; VAE_recon_loss {}; VAE_kld_loss {}".format(GE_loss.item(), G_loss.item(), VAE_recon_loss.item(), VAE_kld_loss.item()))
+=======
                             # weights_TTs.mean() * config['lambda_spatial_transform_weights']
                             
             # log_loss_str = f"GE_loss {GE_loss.item()}; VAE_recon_loss {VAE_recon_loss.item()}; VAE_kld_loss {VAE_kld_loss.item()}; weights_TTs {weights_TTs.mean().item()}; "
@@ -114,6 +126,7 @@ def GAN_training_function(G, D, E, GDE, ema, state_dict, config, img_pool):
             print(log_loss_str)
             
             # optimization
+>>>>>>> e2dbbce3788f03cabc7202a1882f6452fd73e92c
             GE_loss.backward()
             counter += 1
 

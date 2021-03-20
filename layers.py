@@ -59,8 +59,13 @@ def power_iteration(W, u_, update=True, eps=1e-12):
 class identity(nn.Module):
     def forward(self, input):
         return input
+<<<<<<< HEAD
 
 
+=======
+
+
+>>>>>>> e2dbbce3788f03cabc7202a1882f6452fd73e92c
 # Spectral normalization base class
 class SN(object):
     def __init__(self, num_svs, num_itrs, num_outputs, transpose=False, eps=1e-12):
@@ -113,7 +118,10 @@ class SNConv2d(nn.Conv2d, SN):
         nn.Conv2d.__init__(self, in_channels, out_channels, kernel_size, stride,
                            padding, dilation, groups, bias)
         SN.__init__(self, num_svs, num_itrs, out_channels, eps=eps)
+<<<<<<< HEAD
+=======
         self.myid = "snconv2d"
+>>>>>>> e2dbbce3788f03cabc7202a1882f6452fd73e92c
 
     def forward(self, x):
         return F.conv2d(x, self.W_(), self.bias, self.stride,
@@ -126,7 +134,10 @@ class SNLinear(nn.Linear, SN):
                  num_svs=1, num_itrs=1, eps=1e-12):
         nn.Linear.__init__(self, in_features, out_features, bias)
         SN.__init__(self, num_svs, num_itrs, out_features, eps=eps)
+<<<<<<< HEAD
+=======
         self.myid = "snlinear"
+>>>>>>> e2dbbce3788f03cabc7202a1882f6452fd73e92c
 
     def forward(self, x):
         return F.linear(x, self.W_(), self.bias)
@@ -144,7 +155,10 @@ class SNEmbedding(nn.Embedding, SN):
                               max_norm, norm_type, scale_grad_by_freq,
                               sparse, _weight)
         SN.__init__(self, num_svs, num_itrs, num_embeddings, eps=eps)
+<<<<<<< HEAD
+=======
         self.myid = "snembedding"
+>>>>>>> e2dbbce3788f03cabc7202a1882f6452fd73e92c
 
     def forward(self, x):
         return F.embedding(x, self.W_())
@@ -156,7 +170,10 @@ class SNEmbedding(nn.Embedding, SN):
 class Attention(nn.Module):
     def __init__(self, ch, which_conv=SNConv2d, name='attention'):
         super(Attention, self).__init__()
+<<<<<<< HEAD
+=======
         self.myid = "atten"
+>>>>>>> e2dbbce3788f03cabc7202a1882f6452fd73e92c
         # Channel multiplier
         self.ch = ch
         self.which_conv = which_conv
@@ -177,9 +194,15 @@ class Attention(nn.Module):
         phi = F.max_pool2d(self.phi(x), [2, 2])
         g = F.max_pool2d(self.g(x), [2, 2])
         # Perform reshapes
+<<<<<<< HEAD
+        theta = theta.view(-1, self. ch // 8, x.shape[2] * x.shape[3])
+        phi = phi.view(-1, self. ch // 8, x.shape[2] * x.shape[3] // 4)
+        g = g.view(-1, self. ch // 2, x.shape[2] * x.shape[3] // 4)
+=======
         theta = theta.view(-1, self.ch // 8, x.shape[2] * x.shape[3])
         phi = phi.view(-1, self.ch // 8, x.shape[2] * x.shape[3] // 4)
         g = g.view(-1, self.ch // 2, x.shape[2] * x.shape[3] // 4)
+>>>>>>> e2dbbce3788f03cabc7202a1882f6452fd73e92c
         # Matmul and softmax to get attention maps
         beta = F.softmax(torch.bmm(theta.transpose(1, 2), phi), -1)
         # Attention map times g path
@@ -231,7 +254,10 @@ def manual_bn(x, gain=None, bias=None, return_mean_var=False, eps=1e-5):
 class myBN(nn.Module):
     def __init__(self, num_channels, eps=1e-5, momentum=0.1):
         super(myBN, self).__init__()
+<<<<<<< HEAD
+=======
         self.myid = "mybn"
+>>>>>>> e2dbbce3788f03cabc7202a1882f6452fd73e92c
         # momentum for updating running stats
         self.momentum = momentum
         # epsilon to avoid dividing by 0
@@ -302,7 +328,10 @@ class ccbn(nn.Module):
     def __init__(self, output_size, input_size, which_linear, eps=1e-5, momentum=0.1,
                  cross_replica=False, mybn=False, norm_style='bn',):
         super(ccbn, self).__init__()
+<<<<<<< HEAD
+=======
         self.myid = "ccbn"
+>>>>>>> e2dbbce3788f03cabc7202a1882f6452fd73e92c
         self.output_size, self.input_size = output_size, input_size
         # Prepare gain and bias layers
         self.gain = which_linear(input_size, output_size)
@@ -359,7 +388,10 @@ class bn(nn.Module):
     def __init__(self, output_size,  eps=1e-5, momentum=0.1,
                  cross_replica=False, mybn=False):
         super(bn, self).__init__()
+<<<<<<< HEAD
+=======
         self.myid = "bn"
+>>>>>>> e2dbbce3788f03cabc7202a1882f6452fd73e92c
         self.output_size = output_size
         # Prepare gain and bias layers
         self.gain = P(torch.ones(output_size), requires_grad=True)
@@ -404,7 +436,11 @@ class GBlock(nn.Module):
                  which_conv=nn.Conv2d, which_bn=bn, activation=None,
                  upsample=None):
         super(GBlock, self).__init__()
+<<<<<<< HEAD
+
+=======
         self.myid = "gblock"
+>>>>>>> e2dbbce3788f03cabc7202a1882f6452fd73e92c
         self.in_channels, self.out_channels = in_channels, out_channels
         self.which_conv, self.which_bn = which_conv, which_bn
         self.activation = activation
@@ -422,19 +458,28 @@ class GBlock(nn.Module):
         # upsample layers
         self.upsample = upsample
 
+<<<<<<< HEAD
+    def forward(self, x, y):
+        h = self.activation(self.bn1(x, y))
+=======
     def forward(self, x, y, nobn=False):
         if nobn:
             h = self.activation(x)
         else:
             h = self.activation(self.bn1(x, y))
+>>>>>>> e2dbbce3788f03cabc7202a1882f6452fd73e92c
         if self.upsample:
             h = self.upsample(h)
             x = self.upsample(x)
         h = self.conv1(h)
+<<<<<<< HEAD
+        h = self.activation(self.bn2(h, y))
+=======
         if nobn:
             h = self.activation(x)
         else:
             h = self.activation(self.bn2(h, y))
+>>>>>>> e2dbbce3788f03cabc7202a1882f6452fd73e92c
         h = self.conv2(h)
         if self.learnable_sc:
             x = self.conv_sc(x)
@@ -446,7 +491,10 @@ class DBlock(nn.Module):
     def __init__(self, in_channels, out_channels, which_conv=SNConv2d, wide=True,
                  preactivation=False, activation=None, downsample=None,):
         super(DBlock, self).__init__()
+<<<<<<< HEAD
+=======
         self.myid = "dblock"
+>>>>>>> e2dbbce3788f03cabc7202a1882f6452fd73e92c
         self.in_channels, self.out_channels = in_channels, out_channels
         # If using wide D (as in SA-GAN and BigGAN), change the channel pattern
         self.hidden_channels = self.out_channels if wide else self.in_channels
@@ -491,6 +539,8 @@ class DBlock(nn.Module):
             h = self.downsample(h)
 
         return h + self.shortcut(x)
+
+# dogball
 
 
 class Sparsify_hw(nn.Module):

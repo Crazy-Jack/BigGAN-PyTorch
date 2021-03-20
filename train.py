@@ -70,8 +70,13 @@ def run(config):
     # Next, build the model
     G = model.Generator(**config).to(device)
     D = model.Discriminator(**config).to(device)
+<<<<<<< HEAD
+    # E = model.ImgEncoder(**config).to(device)
+    E = model.Encoder(**config).to(device)
+=======
     E = model.ImgEncoder(**config).to(device)
     # E = model.Encoder(**config).to(device)
+>>>>>>> e2dbbce3788f03cabc7202a1882f6452fd73e92c
 
     # If using EMA, prepare it
     if config['ema']:

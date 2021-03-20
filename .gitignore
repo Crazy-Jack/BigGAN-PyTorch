@@ -10,5 +10,6 @@ analysis/
 __pycache__*
 *npy
 *.png
+analysis_activation/
 *.pt
 
