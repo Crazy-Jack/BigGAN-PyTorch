@@ -519,6 +519,7 @@ def prepare_parser():
     
     parser.add_argument("--test_all", action='store_true', default=False,
         help="indicating if test all batch vc in 5.0 + models")
+    parser.add_argument("--eval_image_indexs", type=int, nargs='+', default=[1,], help="image index that want to eval for intermediates activation")
 
 
     return parser

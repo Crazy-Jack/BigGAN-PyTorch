@@ -77,10 +77,14 @@ class Generator(nn.Module):
                  BN_eps=1e-5, SN_eps=1e-12, G_mixed_precision=False, G_fp16=False,
                  G_init='ortho', skip_init=False, no_optim=False,
                  G_param='SN', norm_style='bn', sparsity_resolution='', sparsity_ratio='', no_sparsity=True, mask_base=1e-2,
+<<<<<<< HEAD
+                 **kwargs):
+=======
                  sparsity_mode="spread", sparse_decay_rate=1e-4, no_adaptive_tau=False, local_reduce_factor=4, test_layer=-1, 
                  test_target_block="", select_index=-1, gumbel_temperature=1.0, 
                  conv_select_kernel_size=5, vc_dict_size=150, sparse_vc_interaction_num=4, sparse_vc_prob_interaction=4, 
                  test_all=False, **kwargs):
+>>>>>>> e2dbbce3788f03cabc7202a1882f6452fd73e92c
         super(Generator, self).__init__()
         # Channel width mulitplier
         self.ch = G_ch
@@ -142,7 +146,10 @@ class Generator(nn.Module):
                                 sparsity_ratio=self.sparsity_ratio, no_sparsity=self.no_sparsity)[resolution]
         print("G arch sparsity: ", self.arch['sparsity'])
         self.mask_base = mask_base
+<<<<<<< HEAD
+=======
         self.test_all = test_all
+>>>>>>> e2dbbce3788f03cabc7202a1882f6452fd73e92c
 
         # If using hierarchical latents, adjust z
         if self.hier:
@@ -335,11 +342,7 @@ class Generator(nn.Module):
                                             sparse_vc_interaction=self.sparse_vc_interaction_num, 
                                             sparse_vc_prob_interaction=self.sparse_vc_prob_interaction,
                                             test=self.test_all)]
-                    elif 'gradient_topk_mode_' in self.sparsity_mode:
-                        print(f'Adding {self.sparsity_mode} layer in G at resolution %d ... ' % 
-                            self.arch['resolution'][index])
-                        self.mode = self.sparsity_mode.split("_")[-1]
-                        self.blocks[-1] += [layers.SparseGradient_HW(sparse_percent, mode=self.mode)]
+                    
                     else:
                         raise NotImplementedError(f"Sparsity Mode Invalid: {self.sparsity_mode}")
 
@@ -403,7 +406,11 @@ class Generator(nn.Module):
     # already been passed through G.shared to enable easy class-wise
     # interpolation later. If we passed in the one-hot and then ran it through
     # G.shared in this forward function, it would be harder to handle.
-    def forward(self, z, y, iter_num, y_origin=None, return_inter_activation=False, device='cuda', normal_eval=True, eval_vc=False, return_mask=False, **kwargs):
+<<<<<<< HEAD
+    def forward(self, z, y, return_inter_activation=False, sparsity=1, device='cuda'):
+=======
+    def forward(self, z, y, iter_num, y_origin=None, return_inter_activation=False, device='cuda', normal_eval=True, eval_vc=False, return_mask=False):
+>>>>>>> e2dbbce3788f03cabc7202a1882f6452fd73e92c
         # If hierarchical, concatenate zs and ys
         if self.hier:
             zs = torch.split(z, self.z_chunk_size, 1)
@@ -423,7 +430,7 @@ class Generator(nn.Module):
         h = h.view(h.size(0), -1, self.bottom_width, self.bottom_width)
 
         # prepare list for intermediate output
-        intermediates = {'sparse_block': []}
+        intermediates = {}
         # spatial transform weight regularization
         weight_TTs = 0
         mask_x_all = []
@@ -431,11 +438,24 @@ class Generator(nn.Module):
         previous_prob_vects = []
         affinity_map = []
         entropys = 0
-        regularization = 0
 
         # Loop over blocks
         for index, blocklist in enumerate(self.blocks):
             # Second inner loop in case block has multiple layers
+<<<<<<< HEAD
+            for block in blocklist:
+                # print("block: h {} ; ys[index] {}".format(h.shape, ys[index].shape))
+                h = block(h, ys[index])
+    
+                # impose sparsity constraint for the activation
+                # if index == 0:
+                #     h = layers.sparsify_layer(h, sparsity=sparsity, device=device)
+
+            if return_inter_activation:
+                out = h.cpu().numpy()
+                intermediates[index] = out
+                print("Get activation from block {} : {} ----------- ".format(index, out.shape))
+=======
             for block_idx, block in enumerate(blocklist):
                 # print("block: h {} ; ys[index] {}".format(h.shape, ys[index].shape))
                 if block.myid in ['sparse_ch', 'sparse_hw', 'sparse_all', 'sparse_hyper']:
@@ -445,13 +465,6 @@ class Generator(nn.Module):
                     else:
                         tau = min(iter_num * self.sparse_decay_rate, 1)
                     h = block(h, tau, device=device)
-                elif block.myid == 'sparse_sobel_hw':
-                    tau = 1.0
-                    h, regularization = block(h, tau, device=device)
-                    sparse_block_str = "{}_{}".format(index, block_idx)
-                    # print(f"sparse_block_str {sparse_block_str}")
-                    intermediates['sparse_block'].append(sparse_block_str) # append sparsity block id for eval on the fly
-                
                 elif block.myid == 'local_modular_hyper_col':
                     if (not self.training) and (self.test_layer == index) and (not normal_eval):
                         print("inside bigGAN, self.test_target_block", self.test_target_block)
@@ -524,15 +537,14 @@ class Generator(nn.Module):
                 
                 if return_inter_activation:
                     out = h.detach()
-                    intermediates["{}_{}".format(index, block_idx)] = out
-
-                    # print("Get activation from block {}_{} : {} ----------- ".format(index, block_idx, out.shape))
+                    intermediates["{}-{}".format(index, block_idx)] = out
+                    print("Get activation from block {}-{} : {} ----------- ".format(index, block_idx, out.shape))
         
         # output dict
+>>>>>>> e2dbbce3788f03cabc7202a1882f6452fd73e92c
         
         # Apply batchnorm-relu-conv-tanh at output
         if return_inter_activation:
-            print("RT activation")
             return torch.tanh(self.output_layer(h)), intermediates
         
         if return_mask:
@@ -540,9 +552,6 @@ class Generator(nn.Module):
         # adding maximum entropy to encourage exploration
         if entropys != 0:
             return torch.tanh(self.output_layer(h)), entropys
-        
-        if regularization != 0.:
-            return torch.tanh(self.output_layer(h)), regularization
         
         return torch.tanh(self.output_layer(h)), None
 
@@ -707,6 +716,14 @@ class Discriminator(nn.Module):
         for index, blocklist in enumerate(self.blocks):
             for block in blocklist:
                 h = block(h)
+<<<<<<< HEAD
+        # Apply global sum pooling as in SN-GAN
+        h = torch.mean(self.activation(h), [2, 3])
+        # Get initial class-unconditional output
+        out = self.linear(h)
+        # Get projection of final featureset onto class vectors and add to evidence
+        out = out + torch.mean(self.embed(y) * h, 1, keepdim=True)
+=======
         if not self.patchGAN:
             # Apply global sum pooling as in SN-GAN
             h = torch.mean(self.activation(h), [2, 3])
@@ -720,6 +737,7 @@ class Discriminator(nn.Module):
             h = self.patch_conv(self.activation(h)) # [n, 1, h, w]
             # print(f"Output patch size {h.shape}")
             out = h 
+>>>>>>> e2dbbce3788f03cabc7202a1882f6452fd73e92c
         return out
 
 # Parallelized G_D to minimize cross-gpu communication
@@ -733,7 +751,11 @@ class G_D_E(nn.Module):
         self.D = D
         self.E = E 
 
+<<<<<<< HEAD
+    def forward(self, x, y, train_G=False, return_G_z=False,
+=======
     def forward(self, x, y, config, iter_num, img_pool, train_G=False, return_G_z=False,
+>>>>>>> e2dbbce3788f03cabc7202a1882f6452fd73e92c
                 split_D=False, verbose=False):
         # If training G, enable grad tape
         with torch.set_grad_enabled(train_G):
@@ -748,6 +770,9 @@ class G_D_E(nn.Module):
                 print("y", y.shape)
                 print("self.G.shared(y)", self.G.shared(y).shape)
                 print("z", z.shape)
+<<<<<<< HEAD
+            G_z = self.G(z, self.G.shared(y))
+=======
             output = self.G(z, self.G.shared(y), iter_num, y_origin=y)
             G_z = output[0]
             G_additional = None
@@ -762,6 +787,7 @@ class G_D_E(nn.Module):
             if not train_G:
                 if img_pool:
                     G_z = img_pool.query(G_z, y) # when train discriminator, use buffered generated image to avoid mode collapes, not when train_G
+>>>>>>> e2dbbce3788f03cabc7202a1882f6452fd73e92c
             # print("G_z", G_z[0])
             # Cast as necessary
             if self.G.fp16 and not self.D.fp16:
