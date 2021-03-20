@@ -16,6 +16,7 @@ from sync_batchnorm import SynchronizedBatchNorm2d as SyncBN2d
 
 from layer_conv_select import SparseNeuralConv
 from layer_conv_select_multiple_path import SparseNeuralConvMulti
+from torch.distributions import Categorical
 
 # Projection of x onto y
 def proj(x, y):
@@ -59,13 +60,8 @@ def power_iteration(W, u_, update=True, eps=1e-12):
 class identity(nn.Module):
     def forward(self, input):
         return input
-<<<<<<< HEAD
 
 
-=======
-
-
->>>>>>> e2dbbce3788f03cabc7202a1882f6452fd73e92c
 # Spectral normalization base class
 class SN(object):
     def __init__(self, num_svs, num_itrs, num_outputs, transpose=False, eps=1e-12):
@@ -118,10 +114,7 @@ class SNConv2d(nn.Conv2d, SN):
         nn.Conv2d.__init__(self, in_channels, out_channels, kernel_size, stride,
                            padding, dilation, groups, bias)
         SN.__init__(self, num_svs, num_itrs, out_channels, eps=eps)
-<<<<<<< HEAD
-=======
         self.myid = "snconv2d"
->>>>>>> e2dbbce3788f03cabc7202a1882f6452fd73e92c
 
     def forward(self, x):
         return F.conv2d(x, self.W_(), self.bias, self.stride,
@@ -134,10 +127,7 @@ class SNLinear(nn.Linear, SN):
                  num_svs=1, num_itrs=1, eps=1e-12):
         nn.Linear.__init__(self, in_features, out_features, bias)
         SN.__init__(self, num_svs, num_itrs, out_features, eps=eps)
-<<<<<<< HEAD
-=======
         self.myid = "snlinear"
->>>>>>> e2dbbce3788f03cabc7202a1882f6452fd73e92c
 
     def forward(self, x):
         return F.linear(x, self.W_(), self.bias)
@@ -155,10 +145,7 @@ class SNEmbedding(nn.Embedding, SN):
                               max_norm, norm_type, scale_grad_by_freq,
                               sparse, _weight)
         SN.__init__(self, num_svs, num_itrs, num_embeddings, eps=eps)
-<<<<<<< HEAD
-=======
         self.myid = "snembedding"
->>>>>>> e2dbbce3788f03cabc7202a1882f6452fd73e92c
 
     def forward(self, x):
         return F.embedding(x, self.W_())
@@ -170,10 +157,7 @@ class SNEmbedding(nn.Embedding, SN):
 class Attention(nn.Module):
     def __init__(self, ch, which_conv=SNConv2d, name='attention'):
         super(Attention, self).__init__()
-<<<<<<< HEAD
-=======
         self.myid = "atten"
->>>>>>> e2dbbce3788f03cabc7202a1882f6452fd73e92c
         # Channel multiplier
         self.ch = ch
         self.which_conv = which_conv
@@ -194,15 +178,9 @@ class Attention(nn.Module):
         phi = F.max_pool2d(self.phi(x), [2, 2])
         g = F.max_pool2d(self.g(x), [2, 2])
         # Perform reshapes
-<<<<<<< HEAD
-        theta = theta.view(-1, self. ch // 8, x.shape[2] * x.shape[3])
-        phi = phi.view(-1, self. ch // 8, x.shape[2] * x.shape[3] // 4)
-        g = g.view(-1, self. ch // 2, x.shape[2] * x.shape[3] // 4)
-=======
         theta = theta.view(-1, self.ch // 8, x.shape[2] * x.shape[3])
         phi = phi.view(-1, self.ch // 8, x.shape[2] * x.shape[3] // 4)
         g = g.view(-1, self.ch // 2, x.shape[2] * x.shape[3] // 4)
->>>>>>> e2dbbce3788f03cabc7202a1882f6452fd73e92c
         # Matmul and softmax to get attention maps
         beta = F.softmax(torch.bmm(theta.transpose(1, 2), phi), -1)
         # Attention map times g path
@@ -254,10 +232,7 @@ def manual_bn(x, gain=None, bias=None, return_mean_var=False, eps=1e-5):
 class myBN(nn.Module):
     def __init__(self, num_channels, eps=1e-5, momentum=0.1):
         super(myBN, self).__init__()
-<<<<<<< HEAD
-=======
         self.myid = "mybn"
->>>>>>> e2dbbce3788f03cabc7202a1882f6452fd73e92c
         # momentum for updating running stats
         self.momentum = momentum
         # epsilon to avoid dividing by 0
@@ -328,10 +303,7 @@ class ccbn(nn.Module):
     def __init__(self, output_size, input_size, which_linear, eps=1e-5, momentum=0.1,
                  cross_replica=False, mybn=False, norm_style='bn',):
         super(ccbn, self).__init__()
-<<<<<<< HEAD
-=======
         self.myid = "ccbn"
->>>>>>> e2dbbce3788f03cabc7202a1882f6452fd73e92c
         self.output_size, self.input_size = output_size, input_size
         # Prepare gain and bias layers
         self.gain = which_linear(input_size, output_size)
@@ -388,10 +360,7 @@ class bn(nn.Module):
     def __init__(self, output_size,  eps=1e-5, momentum=0.1,
                  cross_replica=False, mybn=False):
         super(bn, self).__init__()
-<<<<<<< HEAD
-=======
         self.myid = "bn"
->>>>>>> e2dbbce3788f03cabc7202a1882f6452fd73e92c
         self.output_size = output_size
         # Prepare gain and bias layers
         self.gain = P(torch.ones(output_size), requires_grad=True)
@@ -436,11 +405,7 @@ class GBlock(nn.Module):
                  which_conv=nn.Conv2d, which_bn=bn, activation=None,
                  upsample=None):
         super(GBlock, self).__init__()
-<<<<<<< HEAD
-
-=======
         self.myid = "gblock"
->>>>>>> e2dbbce3788f03cabc7202a1882f6452fd73e92c
         self.in_channels, self.out_channels = in_channels, out_channels
         self.which_conv, self.which_bn = which_conv, which_bn
         self.activation = activation
@@ -458,28 +423,19 @@ class GBlock(nn.Module):
         # upsample layers
         self.upsample = upsample
 
-<<<<<<< HEAD
-    def forward(self, x, y):
-        h = self.activation(self.bn1(x, y))
-=======
     def forward(self, x, y, nobn=False):
         if nobn:
             h = self.activation(x)
         else:
             h = self.activation(self.bn1(x, y))
->>>>>>> e2dbbce3788f03cabc7202a1882f6452fd73e92c
         if self.upsample:
             h = self.upsample(h)
             x = self.upsample(x)
         h = self.conv1(h)
-<<<<<<< HEAD
-        h = self.activation(self.bn2(h, y))
-=======
         if nobn:
             h = self.activation(x)
         else:
             h = self.activation(self.bn2(h, y))
->>>>>>> e2dbbce3788f03cabc7202a1882f6452fd73e92c
         h = self.conv2(h)
         if self.learnable_sc:
             x = self.conv_sc(x)
@@ -491,10 +447,7 @@ class DBlock(nn.Module):
     def __init__(self, in_channels, out_channels, which_conv=SNConv2d, wide=True,
                  preactivation=False, activation=None, downsample=None,):
         super(DBlock, self).__init__()
-<<<<<<< HEAD
-=======
         self.myid = "dblock"
->>>>>>> e2dbbce3788f03cabc7202a1882f6452fd73e92c
         self.in_channels, self.out_channels = in_channels, out_channels
         # If using wide D (as in SA-GAN and BigGAN), change the channel pattern
         self.hidden_channels = self.out_channels if wide else self.in_channels
@@ -1482,3 +1435,88 @@ def plot_vc(cov, sparse_vc):
     plt.imshow(sparse_vc, cmap='hot', interpolation='nearest')
     plt.savefig("/lab_data/leelab/tianqinl/BigGAN-PyTorch/scripts/1percent/evals/hypercolumn_sparse_implicit_recover_vc_sparse_comb_weight_sparse_10percent/vc_activation_layer1.png")
     plt.close()
+
+################
+# March 18 2021#
+################
+from sobel import Sobel
+class SparseGradient_HW(nn.Module):
+    """implment sparse selection on sober gradient"""
+    def __init__(self, topk, mode, lambda_locality=0.5, lambda_activation_l1_norm=1, topk_channel=0.3):
+        super(SparseGradient_HW, self).__init__()
+        self.topk = topk 
+        self.myid = "sparse_sobel_hw"
+        self.sobel_operation = Sobel()
+        self.mode = mode
+        self.lambda_locality = lambda_locality
+        self.lambda_activation_l1_norm = lambda_activation_l1_norm
+        self.topk_channel = topk_channel
+
+    def forward(self, x, tau, device='cuda'):
+        n, c, h, w = x.shape
+        x_reshape = x.view(n, c, h * w)
+        keep_top_num = max(int(self.topk * h * w), 1)
+
+        # select topk by image gradient 
+        grad_magnitude = self.sobel_operation(x) # n, c, h, w
+        grad_magnitude_reshape = grad_magnitude.reshape(n, c, -1)
+
+        _, index = torch.topk(grad_magnitude_reshape.abs(), keep_top_num, dim=2)
+        mask = torch.zeros_like(grad_magnitude_reshape).scatter_(2, index, 1).to(device) # n, c, h * w
+        # print("mask percent: ", mask.mean().item())
+        
+        if float(self.mode) == 1.0:
+            sparse_x = mask * x_reshape
+            return sparse_x.view(n, c, h, w), 0.
+        elif float(self.mode) == 1.1:
+            sparse_x = mask * x_reshape
+            sparse_x = sparse_x.view(n, c, h, w)
+            
+            # apply l1 norm regularization in each channel to induce sparsity
+            reg = grad_magnitude_reshape.abs().mean() * self.lambda_activation_l1_norm
+            # regularize the gradient compactness in each channel
+            x_coord_prob = grad_magnitude.sum(3).reshape(n * c, h) # [n * c, h]
+            y_coord_prob = grad_magnitude.sum(2).reshape(n * c, w) # [n * c, w]
+            # ## want the x/y mass more concentrated
+            # print(f"grad_magnitude.sum((1, 2, 3)) {grad_magnitude.sum((1, 2, 3)).shape}")
+            # print(f"grad_magnitude.sum((2, 3)) {grad_magnitude.sum((2, 3)).shape}")
+            weighted_by_magnitude = (grad_magnitude.sum((2, 3)) / grad_magnitude.sum((1, 2, 3)).reshape(-1, 1)).reshape(n * c, )
+            x_coord_entropy = Categorical(probs = x_coord_prob).entropy() * weighted_by_magnitude# weighted by the total magnitude of that channel
+            y_coord_entropy = Categorical(probs = y_coord_prob).entropy() * weighted_by_magnitude
+            regularize_locality = (x_coord_entropy.mean() + y_coord_entropy.mean()) * self.lambda_locality
+
+            reg = reg + regularize_locality
+            return sparse_x, reg
+        elif float(self.mode) == 1.2:
+            """sparse out the entire channel"""
+            sparse_x = mask * x_reshape
+            sparse_x = sparse_x.view(n, c, h, w) # n, c, h, w
+
+            # apply l1 norm regularization in each channel to induce sparsity
+            reg = grad_magnitude_reshape.abs().mean() * self.lambda_activation_l1_norm
+            # regularize the gradient compactness in each channel
+            x_coord_prob = grad_magnitude.sum(3).reshape(n * c, h) # [n * c, h]
+            y_coord_prob = grad_magnitude.sum(2).reshape(n * c, w) # [n * c, w]
+            # ## want the x/y mass more concentrated
+            # print(f"grad_magnitude.sum((1, 2, 3)) {grad_magnitude.sum((1, 2, 3)).shape}")
+            # print(f"grad_magnitude.sum((2, 3)) {grad_magnitude.sum((2, 3)).shape}")
+            weighted_by_magnitude = (grad_magnitude.sum((2, 3)) / grad_magnitude.sum((1, 2, 3)).reshape(-1, 1)).reshape(n * c, )
+            x_coord_entropy = Categorical(probs = x_coord_prob).entropy() * weighted_by_magnitude# weighted by the total magnitude of that channel
+            y_coord_entropy = Categorical(probs = y_coord_prob).entropy() * weighted_by_magnitude
+            regularize_locality = (x_coord_entropy.mean() + y_coord_entropy.mean()) * self.lambda_locality
+            reg = reg + regularize_locality
+
+            # only activate 20 % entire column
+            sparse_x_channel = sparse_x.abs().sum((2, 3)) # n, c
+            sparse_x_channel_prob = sparse_x_channel / sparse_x_channel.sum(1)[:, None] # n, c
+            ## topk sparse_x_channel
+            keep_top_num = max(int(self.topk_channel * c), 1)
+            _, index = torch.topk(sparse_x_channel_prob, keep_top_num, dim=1)
+            sparse_channel_mask = torch.zeros_like(sparse_x_channel_prob).scatter_(1, index, 1).to(device) # n, c
+            
+            # print(f"sparse_channel_mask[:, :, None, None] {sparse_channel_mask[:, :, None, None].shape}")
+            # print(f"sparse_x_channel_prob[:, :, None, None] {sparse_x_channel_prob[:, :, None, None].shape}")
+            # print(f"sparse_x {sparse_x.shape}")
+            sparse_x = sparse_x * ( (sparse_channel_mask + sparse_x_channel_prob - sparse_x_channel_prob.detach())[:, :, None, None])
+
+            return sparse_x, reg

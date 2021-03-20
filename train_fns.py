@@ -2,6 +2,7 @@
 Functions for the main loop of training different conditional image models
 '''
 import os
+from itertools import repeat
 
 import torch
 import torch.nn as nn
@@ -155,6 +156,11 @@ def GAN_training_function(G, D, E, GDE, ema, state_dict, config, img_pool):
 
 def save_and_sample(G, D, E, G_ema, fixed_x, fixed_y, z_, y_,
                     state_dict, config, experiment_name, img_pool, save_weights):
+
+    # sparsity mode
+    if 'gradient_topk_mode_' in config['sparsity_mode']:
+        sparsity_mode = ('gradient_topk', float(config['sparsity_mode'].split('_')[-1]))
+
     # Use EMA G for samples or non-EMA?
     which_G = G_ema if config['ema'] and config['use_ema'] else G
 
@@ -182,31 +188,34 @@ def save_and_sample(G, D, E, G_ema, fixed_x, fixed_y, z_, y_,
     # Save a random sample sheet with fixed z and y
     # TODO: change here to encode fixed x into z and feed z with fixed y into G
     with torch.no_grad():
-        if config['parallel']:
-            print("fixed_x: ", fixed_x.shape)
-            if config['inference_nosample']:
-                _, fixed_z, _ = [i.detach() for i in nn.parallel.data_parallel(E, fixed_x)]
-            else:
-                fixed_z, _, _ =  [i.detach() for i in nn.parallel.data_parallel(E, fixed_x)]
-            print("fixed_z: ", fixed_z.shape)
-            print("fixed_y: ", fixed_y.shape)
+        # if config['parallel']:
+        #     print("fixed_x: ", fixed_x.shape)
+        #     if config['inference_nosample']:
+        #         _, fixed_z, _ = [i.detach() for i in nn.parallel.data_parallel(E, fixed_x)]
+        #     else:
+        #         fixed_z, _, _ =  [i.detach() for i in nn.parallel.data_parallel(E, fixed_x)]
+        #     print("fixed_z: ", fixed_z.shape)
+        #     print("fixed_y: ", fixed_y.shape)
 
-            output = nn.parallel.data_parallel(
-                    which_G, (fixed_z, which_G.shared(fixed_y), config, state_dict['itr']))
+        #     output = nn.parallel.data_parallel(
+        #             which_G, (fixed_z, which_G.shared(fixed_y), state_dict['itr'], repeat(None),\
+        #                      repeat(True)))
             
-            fixed_Gz = output[0].detach()
-            if config['no_sparsity']:
-                mask_x_all = []
-            # else:
-            #     mask_x_all = [item.detach() for item in output[1]] # [[n, k, h, w],...,]
+        #     fixed_Gz = output[0].detach()
+        #     intermediates = output[1]
+        #     # else:
+        #     #     mask_x_all = [item.detach() for item in output[1]] # [[n, k, h, w],...,]
 
-        else:
-            fixed_z, _, _ = E(fixed_x)
-            fixed_Gz, output_dict = which_G(fixed_z, which_G.shared(fixed_y), int(1 / config['sparse_decay_rate']) + 100, True)
-            if (not config['no_adaptive_tau']) and (state_dict['itr'] * config['sparse_decay_rate'] < 1.1):
-                fixed_Gz_train = which_G(fixed_z, which_G.shared(fixed_y), state_dict['itr'])
-            # detach
-            fixed_Gz = fixed_Gz.detach().float().cpu()
+        # else:
+
+        fixed_z, _, _ = E(fixed_x)
+        print("fixed_x: ", fixed_x.shape)
+        print("fixed_z: ", fixed_z.shape)
+        print("fixed_y: ", fixed_y.shape)
+        output = which_G(fixed_z, which_G.shared(fixed_y), state_dict['itr'], return_inter_activation=True)
+        
+        fixed_Gz = output[0].detach()
+        intermediates = output[1]
     
     
 
@@ -219,6 +228,38 @@ def save_and_sample(G, D, E, G_ema, fixed_x, fixed_y, z_, y_,
 
     torchvision.utils.save_image(fixed_Gz, image_filename,
                                  nrow=int(fixed_Gz.shape[0] ** 0.5), normalize=True)
+
+    print(f"sparsity_mode {sparsity_mode}")
+    if sparsity_mode[0] == 'gradient_topk': 
+        
+        # save each channel
+        image_indexs = config['eval_image_indexs']
+        block_names = intermediates['sparse_block']
+        print(f"block_names {block_names}")
+        for block in block_names:
+            activation = intermediates[block].cpu()
+            # print(f"activation {activation.shape}")
+        
+            for image_index in image_indexs:
+                # print(f"image_index {image_index}")
+                channel_image_filename = '%s/eval_iter_%s_img_%s_block_%s_channels_.jpg' % (save_dir,
+                                                                state_dict['itr'],
+                                                                str(image_index), 
+                                                                block)
+                
+                # sort activation by activation magnitude
+                # activation_sort = torch.argsort(activation[image_index].std((1,2)), descending=True)
+                activation_i = activation[image_index].unsqueeze(1).repeat(1, 3, 1, 1)
+                
+                torchvision.utils.save_image(activation_i.float(), channel_image_filename,
+                                            nrow=int(activation_i.shape[0] ** 0.5), normalize=True)
+
+                # activation 10%?
+                sparsity = torch.where(activation_i == 0)[0]
+                print(f"Sparsity: {1 - sparsity.shape[0] / (activation_i.shape[0] * 3 * activation_i.shape[2] * activation_i.shape[3])}")
+
+
+    
 
     # if True and mask_x_all:
     #     for layers in range(len(mask_x_all)):
