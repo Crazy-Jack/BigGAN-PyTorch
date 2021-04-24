@@ -26,14 +26,14 @@ python ../../train.py \
 --sparse_decay_rate 1e-3 \
 --no_adaptive_tau \
 --sparse_vc_interaction_num 2 \
---vc_dict_size 100 \
+--vc_dict_size 1000 \
 --num_epochs 1000 \
---sparse_vc_prob_interaction 2 \
 --patchGAN \
 --lambda_g_additional 100 \
-# --resume \
+--img_pool_size 20 \
+--resume \
 
 ### LOG ###
-# in 6.0 (compare with 5.3):
-# plan sparse layer on 32x32 layer
-# only use VC not the map information
+# in 7.0
+# concate vc and activation
+# use ||E(output) - vc|| to make the output not ignore the vc

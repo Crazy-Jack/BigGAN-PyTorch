@@ -1,7 +1,7 @@
 #!/bin/bash
 python ../../train.py \
 --data_root /user_data/tianqinl/Dataset \
---dataset CelebA --parallel --shuffle  --num_workers 32 --batch_size 36 \
+--dataset Church --parallel --shuffle  --num_workers 32 --batch_size 36 \
 --num_G_accumulations 3 --num_D_accumulations 3 \
 --num_D_steps 1 --G_lr 1e-5 --D_lr 4e-5 --E_lr 1e-5 --D_B2 0.999 --G_B2 0.999 --E_B2 0.999 \
 --lambda_vae_kld 1e-3 --lambda_vae_recon 10 \
@@ -18,19 +18,25 @@ python ../../train.py \
 --use_multiepoch_sampler \
 --pbar tqdm \
 --inference_nosample \
---experiment_name sobel_sparse_resolution_64_10percent_mode_1.2 \
---sparsity_resolution 64 --sparsity_ratio 15 \
+--experiment_name hypercolumn_sparse_conv_sparse_vc_recover_mode_6.1 \
+--sparsity_resolution 32 --sparsity_ratio 10 \
 --save_weights \
 --encoder Resnet-18 \
---sparsity_mode gradient_topk_mode_1.2 \
+--sparsity_mode conv_sparse_vc_recover_no_sparse_mode_6.1 \
 --sparse_decay_rate 1e-3 \
 --no_adaptive_tau \
+--sparse_vc_interaction_num 2 \
+--vc_dict_size 1000 \
 --num_epochs 1000 \
---lambda_g_additional 10 \
---eval_image_indexs 0 1 2 3 35 \
+--sparse_vc_prob_interaction 2 \
+--patchGAN \
+--lambda_g_additional 100 \
 --resume \
 
+### LOG ###
+# in 6.0 (compare with 5.3):
+# plan sparse layer on 32x32 layer
+# only use VC not the map information
+# compare with 6.0, add loss to pull vc and activation together
+# compare with 6.0, use 100x smaller warmup phase
 
-# dev log
-# for 1.1, we regularize the l1 norm of the gradient map 
-# for 1.2, we sparse channels as well

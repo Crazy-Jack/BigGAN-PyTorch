@@ -1,7 +1,7 @@
 #!/bin/bash
 python ../../train.py \
 --data_root /user_data/tianqinl/Dataset \
---dataset CelebA --parallel --shuffle  --num_workers 32 --batch_size 36 \
+--dataset Church --parallel --shuffle  --num_workers 32 --batch_size 36 \
 --num_G_accumulations 3 --num_D_accumulations 3 \
 --num_D_steps 1 --G_lr 1e-5 --D_lr 4e-5 --E_lr 1e-5 --D_B2 0.999 --G_B2 0.999 --E_B2 0.999 \
 --lambda_vae_kld 1e-3 --lambda_vae_recon 10 \
@@ -19,7 +19,7 @@ python ../../train.py \
 --pbar tqdm \
 --inference_nosample \
 --experiment_name sobel_sparse_resolution_64_10percent_mode_1.2 \
---sparsity_resolution 64 --sparsity_ratio 15 \
+--sparsity_resolution 64 --sparsity_ratio 30 \
 --save_weights \
 --encoder Resnet-18 \
 --sparsity_mode gradient_topk_mode_1.2 \
@@ -28,7 +28,8 @@ python ../../train.py \
 --num_epochs 1000 \
 --lambda_g_additional 10 \
 --eval_image_indexs 0 1 2 3 35 \
---resume \
+--img_pool_size 20 \
+# --resume \
 
 
 # dev log

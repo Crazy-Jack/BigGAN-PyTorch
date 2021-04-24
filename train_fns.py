@@ -160,7 +160,10 @@ def save_and_sample(G, D, E, G_ema, fixed_x, fixed_y, z_, y_,
     # sparsity mode
     if 'gradient_topk_mode_' in config['sparsity_mode']:
         sparsity_mode = ('gradient_topk', float(config['sparsity_mode'].split('_')[-1]))
-
+    elif 'regularized_sparse_hw_topk_mode_' in config['sparsity_mode']:
+        sparsity_mode = ('regularized_sparse_hw_topk', float(config['sparsity_mode'].split('_')[-1]))
+    else:
+        sparsity_mode = ("", 0.0)
     # Use EMA G for samples or non-EMA?
     which_G = G_ema if config['ema'] and config['use_ema'] else G
 
@@ -230,7 +233,7 @@ def save_and_sample(G, D, E, G_ema, fixed_x, fixed_y, z_, y_,
                                  nrow=int(fixed_Gz.shape[0] ** 0.5), normalize=True)
 
     print(f"sparsity_mode {sparsity_mode}")
-    if sparsity_mode[0] == 'gradient_topk': 
+    if sparsity_mode[0] in ['gradient_topk', 'regularized_sparse_hw_topk']: 
         
         # save each channel
         image_indexs = config['eval_image_indexs']

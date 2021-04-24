@@ -263,19 +263,11 @@ class GenerateMask_3_0(nn.Module):
         y = y / (x_norm[:, None, :, :] * weights_norm[None, :, None, None]) # normalized by it length: [n * L, or_cadidate, h, w] range: (-1, 1)
         
         if self.vc_stats.sum() < self.warmup:
-            print(f"Warmup sum of vc_stats {self.vc_stats.sum()} < {self.warmup} ")
+            # print(f"Warmup sum of vc_stats {self.vc_stats.sum()} < {self.warmup} ")
             y += Variable(torch.rand(y.shape).to(device))
 
         # batched max response of each vc response
-        if self.vc_type == 'parts':
-            # print(f"n {n}, L {L}, c {c}, h {h}, w {w}")
-            # print(f"y.shape {y.shape}")
-            max_y = torch.max(y.reshape(n * L, -1, h * w), dim=2)[0] # [n * L, or_cadidate]
-        elif self.vc_type == 'texture':
-            max_y = F.softmax(1 / (e-12 + y.std((2, 3))) / self.tmp, dim=1) # [n * L, or_cadidate]
-        else:
-            raise NotImplementedError(f"self.vc_type {self.vc_type} is not implemented in GenerateMask_4_0 forward path")
-
+        max_y = torch.max(y.reshape(n * L, -1, h * w), dim=2)[0] # [n * L, or_cadidate]
         max_y = max_y.reshape(n, L, -1) # [n, L, or_cadidate]
         # attention modules for selecting vc
         for attention in self.vc_prob_attention:
@@ -341,11 +333,11 @@ class GenerateMask_3_0(nn.Module):
         # maximize negative entropy of the y
         if self.reg_entropy:
             p = self.vc_stats / self.vc_stats.sum()
-            print(f"VC concepts prob: mean {p.mean().item():5f} std {p.std().item():5f}; <0.5 {len(torch.where(p<0.5)[0])};"
-                        f"<0.05 {len(torch.where(p<0.05)[0])} ; <0.01 {len(torch.where(p<0.01)[0])} ;" 
-                        f"<0.005 {len(torch.where(p<0.005)[0])};"
-                        f"<0.001 {len(torch.where(p<0.001)[0])};"
-                        f"<0.0005 {len(torch.where(p<0.0005)[0])};")
+            # print(f"VC concepts prob: mean {p.mean().item():5f} std {p.std().item():5f}; <0.5 {len(torch.where(p<0.5)[0])};"
+            #             f"<0.05 {len(torch.where(p<0.05)[0])} ; <0.01 {len(torch.where(p<0.01)[0])} ;" 
+            #             f"<0.005 {len(torch.where(p<0.005)[0])};"
+            #             f"<0.001 {len(torch.where(p<0.001)[0])};"
+            #             f"<0.0005 {len(torch.where(p<0.0005)[0])};")
             neg_entropy_vc_stats = - Categorical(probs = p).entropy() # negative entropy
             additional_loss.append(neg_entropy_vc_stats)
             # print(f"Entropy {neg_entropy_vc_stats}")
@@ -422,3 +414,143 @@ def test_vc(integrate_activation_vc, max_ch_index, sim_map_max, L, c, h, w):
 
 
 
+
+class GenerateMask_4_0(nn.Module):
+    """
+    sparsify by 1x1 conv and apply gumbel softmax; 3.0 version
+    new: 
+        - when generating mask, try to map it back to vc
+    """
+    def __init__(self, ch, resolution, or_cadidate=1000, sparse_vc_prob_interaction=20, vc_type="parts", tmp=0.05, reg_entropy=False, warmup=5436000, no_map=False, \
+                 pull_vc_activation=False, replace_activation=False):
+        super(GenerateMask_4_0, self).__init__()
+        self.conv = nn.Conv2d(ch, or_cadidate, kernel_size=1, padding=0, bias=False)
+        self.sparse_vc_prob_interaction = sparse_vc_prob_interaction
+        # self.vc_prob_attention = nn.ModuleList([BatchedVectorAttention(or_cadidate, max(or_cadidate // 5, 1)) for _ in range(self.sparse_vc_prob_interaction)])
+        self.relu = nn.ReLU()
+        self.or_cadidate = or_cadidate
+        # define types of vc
+        assert vc_type in ['parts', 'texture']
+        self.vc_type = vc_type
+        self.tmp = tmp
+        self.no_map = no_map
+        if reg_entropy:
+            self.warmup = warmup
+            self.reg_entropy = reg_entropy
+            print("reg_entropy", reg_entropy)
+
+            self.register_buffer("vc_stats", torch.FloatTensor([0.] * self.or_cadidate))
+        self.pull_vc_activation = pull_vc_activation # False, or (0.1) indicating the beta value, (0) means beta is 0 but the error for stored vc is not zero
+        print(f"pull vc_activation {self.pull_vc_activation}")
+        self.replace_activation = replace_activation
+
+    def forward(self, x, test=False, device="cuda"):
+        """
+        input x: [n, L, c, kernel, kernel]
+        output mask: [n * L, 1, kernel, kernel]
+        """
+        # additional term to regularize
+        additional_loss = []
+
+        n, L, c, h, w = x.shape
+        x_reshape = x.reshape(-1, c, h, w) # [n * L, c, h, w]
+        x_norm = (x_reshape ** 2).sum((1)).sqrt() # [n * L, h, w]
+        weights = self.conv.weight # [or_cadidate, c, 1, 1]
+        weights_norm = (weights**2).sum(1).sqrt().view(self.or_cadidate,) # [or_cadidate,]
+
+        # print(f"x {x.shape}")
+        y = self.conv(x_reshape) # [n * L, or_cadidate, h, w]
+        # normalize the similarity map: 
+        y = y / (x_norm[:, None, :, :] * weights_norm[None, :, None, None]) # normalized by it length: [n * L, or_cadidate, h, w] range: (-1, 1)
+        
+        if self.vc_stats.sum() < self.warmup:
+            print(f"Warmup sum of vc_stats {self.vc_stats.sum()} < {self.warmup} ")
+            y = y + Variable(torch.rand(y.shape).to(device)) - y.detach()
+
+        # batched max response of each vc response
+        
+        max_y = torch.max(y.reshape(n * L, -1, h * w), dim=2)[0] # [n * L, or_cadidate]
+        max_y = max_y.reshape(n, L, -1) # [n, L, or_cadidate]
+       
+        # get max channel index
+        _, index = torch.topk(max_y.view(n*L, -1), 1, dim=1) # max_similarity_value: [n * L, 1]
+
+        # get max vc similarity map
+        max_ch_index = index.view(-1, 1) # [n * L, 1]
+        gather_index_max_vc_map = max_ch_index.unsqueeze(2).unsqueeze(2).expand(max_ch_index.size(0), max_ch_index.size(1), h, w) 
+        sim_map_max = torch.gather(y, 1, gather_index_max_vc_map) # n * L, 1, h, w
+
+        if self.reg_entropy:
+            # store which vc being used
+            for vc in max_ch_index.view(-1):
+                self.vc_stats[vc] += 1 
+        
+        # get the max activation column
+        max_similarity_value, max_activation_column_index = torch.topk(sim_map_max.view(n * L, -1), 1, dim=1)
+        max_activation_column_index = max_activation_column_index.squeeze(1)  # [n*L, ], 
+
+        index_0 = torch.LongTensor([[i for _ in range(c)] for i in range(n*L)]) # [[0,0,0,0,0], [1,1,1,1,1]] if c = 5
+        index_1 = torch.LongTensor([[i for i in range(c)] for _ in range(n*L)]) # [[0,1,2,3,4],[0,1,2,3,4]] if n*L = 2
+        index_2 = max_activation_column_index.view(-1, 1).expand(n*L, c) # [[3,3,3,3,3],[2,2,2,2,2]]] if n*L = 2
+        max_activation = x_reshape.view(n * L, c, -1)[index_0, index_1, index_2] # n * L, c
+
+        # get corresponding vc 
+        vc = torch.gather(weights.squeeze(2).squeeze(2), 0, max_ch_index.expand(max_ch_index.size(0), c)) # [n * L, c]
+
+        # intepolate vc - activation concat
+        integrate_activation_vc = torch.cat([max_activation, vc], dim=1)  # [n * L, 2c]
+
+        if self.pull_vc_activation:
+            # pull vc towards activation
+            beta = self.pull_vc_activation[0]
+            # error for vc
+            error_vc = ((max_activation.detach() - vc) ** 2).mean()
+            error_activation = beta * ((max_activation - vc.detach()) ** 2).mean()
+            error_pull_vc_activation = error_vc + error_activation
+            print(f"error_pull_vc_activation {error_pull_vc_activation}")
+            additional_loss.append(error_pull_vc_activation)
+
+        # print("-----------------CHECKPOINT ---------------")
+        if test:
+            print("Testing vc...")
+            import matplotlib.pyplot as plt 
+            batched_max_index = max_ch_index.reshape(n, L, 1)
+            # check if one vc dominate
+            vc_usage = torch.eq(batched_max_index, torch.transpose(batched_max_index, 1, 2)) * 1.
+            vc_usage_ = vc_usage.mean((2)).view(n * L, ).cpu().numpy()
+            print(batched_max_index.view(n, L))
+            plt.hist(vc_usage_, bins=100)
+            plt.savefig("/lab_data/leelab/tianqinl/BigGAN-PyTorch/scripts/celeba/vc_usage_7.0.png")
+            plt.close()
+            # integrate_activation_vc = torch.cat([vc, torch.flipud(vc)], dim=1)  # [n * L, 2c]
+            # integrate_activation_vc = torch.cat([max_activation, torch.zeros_like(vc).to(device)], dim=1)  # [n * L, 2c]
+
+
+
+            # print("VC useage statistics")
+            # uniques_t = {}
+            # for i in max_ch_index.view(-1):
+            #     if i.item() not in uniques_t:
+            #         uniques_t[i.item()] = 0
+            #     else:
+            #         uniques_t[i.item()] += 1
+            # print(f"One batch {uniques_t}")
+            # print(f"sim score {max_similarity_value.mean()}")
+            # print(f"Sorted vc stats {torch.sort(self.vc_stats, descending=True)[0][:20]}")
+            # np.save("/lab_data/leelab/tianqinl/BigGAN-PyTorch/scripts/celeba/vc_stats_6.0.pt", self.vc_stats.cpu().numpy())
+            # integrate_activation_vc, sim_map_max = test_vc(integrate_activation_vc, max_ch_index, sim_map_max, L, c, h, w)
+
+        # integrate additional loss
+        if len(additional_loss) > 0:
+            additional = additional_loss[0]
+            if len(additional_loss) > 1:
+                for addi_loss in additional_loss[1:]:
+                    additional += addi_loss
+        else:
+            additional = None 
+
+        if self.no_map:
+            sim_map_max = None
+
+        # regularize entropy term
+        return integrate_activation_vc, sim_map_max, additional # [n * L, 2c], [n * L, 1, h, w], scaler

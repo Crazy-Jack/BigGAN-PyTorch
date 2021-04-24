@@ -15,6 +15,7 @@ from torch.autograd import Variable
 from sync_batchnorm import SynchronizedBatchNorm2d as SyncBN2d
 
 from layer_conv_select import SparseNeuralConv
+from layer_vc_linear_comb import LinearCombineVC
 from layer_conv_select_multiple_path import SparseNeuralConvMulti
 from torch.distributions import Categorical
 
@@ -1442,7 +1443,7 @@ def plot_vc(cov, sparse_vc):
 from sobel import Sobel
 class SparseGradient_HW(nn.Module):
     """implment sparse selection on sober gradient"""
-    def __init__(self, topk, mode, lambda_locality=0.5, lambda_activation_l1_norm=1, topk_channel=0.3):
+    def __init__(self, topk, mode, lambda_locality=0.5, lambda_activation_l1_norm=1, topk_channel=0.1, lambda_sum_channels=1e-2):
         super(SparseGradient_HW, self).__init__()
         self.topk = topk 
         self.myid = "sparse_sobel_hw"
@@ -1451,6 +1452,7 @@ class SparseGradient_HW(nn.Module):
         self.lambda_locality = lambda_locality
         self.lambda_activation_l1_norm = lambda_activation_l1_norm
         self.topk_channel = topk_channel
+        self.lambda_sum_channels = lambda_sum_channels
 
     def forward(self, x, tau, device='cuda'):
         n, c, h, w = x.shape
@@ -1520,3 +1522,110 @@ class SparseGradient_HW(nn.Module):
             sparse_x = sparse_x * ( (sparse_channel_mask + sparse_x_channel_prob - sparse_x_channel_prob.detach())[:, :, None, None])
 
             return sparse_x, reg
+        elif float(self.mode) == 1.3:
+            """regularize the weights"""
+            sparse_x = mask * x_reshape
+            sparse_x = sparse_x.view(n, c, h, w) # n, c, h, w
+
+            # apply l1 norm regularization in each channel to induce sparsity
+            reg = grad_magnitude_reshape.abs().mean() * self.lambda_activation_l1_norm
+            # regularize the gradient compactness in each channel
+            x_coord_prob = grad_magnitude.sum(3).reshape(n * c, h) # [n * c, h]
+            y_coord_prob = grad_magnitude.sum(2).reshape(n * c, w) # [n * c, w]
+            # ## want the x/y mass more concentrated
+            # print(f"grad_magnitude.sum((1, 2, 3)) {grad_magnitude.sum((1, 2, 3)).shape}")
+            # print(f"grad_magnitude.sum((2, 3)) {grad_magnitude.sum((2, 3)).shape}")
+            weighted_by_magnitude = (grad_magnitude.sum((2, 3)) / grad_magnitude.sum((1, 2, 3)).reshape(-1, 1)).reshape(n * c, )
+            x_coord_entropy = Categorical(probs = x_coord_prob).entropy() * weighted_by_magnitude# weighted by the total magnitude of that channel
+            y_coord_entropy = Categorical(probs = y_coord_prob).entropy() * weighted_by_magnitude
+            regularize_locality = (x_coord_entropy.mean() + y_coord_entropy.mean()) * self.lambda_locality
+            reg = reg + regularize_locality
+
+            # only activate 20 % entire column
+            sparse_x_channel = sparse_x.abs().sum((2, 3)) # n, c
+            
+            reg += sparse_x_channel.mean() * self.lambda_sum_channels
+
+            return sparse_x, reg
+
+
+
+### Mar 20
+### revisit sparse hw
+
+class NewSparseHW(nn.Module):
+    """implment sparse selection on topk with regularizations"""
+    def __init__(self, topk, mode, lambda_locality=0.5, lambda_activation_l1_norm=1, topk_channel=0.3, lambda_reg_map_coverage=1):
+        super(NewSparseHW, self).__init__()
+        self.topk = topk 
+        self.myid = "regularized_sparse_hw"
+        self.mode = mode
+        self.lambda_locality = lambda_locality
+        self.lambda_activation_l1_norm = lambda_activation_l1_norm
+        self.topk_channel = topk_channel
+        self.lambda_reg_map_coverage = lambda_reg_map_coverage
+
+    def forward(self, x, tau, device='cuda'):
+        n, c, h, w = x.shape
+        x_reshape = x.view(n, c, h * w)
+        keep_top_num = max(int(self.topk * h * w), 1)
+
+        _, index = torch.topk(x_reshape.abs(), keep_top_num, dim=2)
+        mask = torch.zeros_like(x_reshape).scatter_(2, index, 1).to(device) # n, c, h * w
+        # print("mask percent: ", mask.mean().item())
+        
+       
+        if float(self.mode) == 1.0:
+            """sparse out the entire channel"""
+
+            sparse_x = mask * x_reshape
+            sparse_x = sparse_x.view(n, c, h, w) # n, c, h, w
+            x_shape_abs = x.abs() # n, c, h, w
+
+            # only activate 20 % entire column
+            sparse_x_channel = sparse_x.abs().sum((2, 3)) # n, c
+            sparse_x_channel_prob = sparse_x_channel / sparse_x_channel.sum(1)[:, None] # n, c
+            ## topk sparse_x_channel
+            keep_top_num = max(int(self.topk_channel * c), 1)
+            _, index = torch.topk(sparse_x_channel_prob, keep_top_num, dim=1)
+            sparse_channel_mask = torch.zeros_like(sparse_x_channel_prob).scatter_(1, index, 1).to(device) # n, c
+            
+            # print(f"sparse_channel_mask[:, :, None, None] {sparse_channel_mask[:, :, None, None].shape}")
+            # print(f"sparse_x_channel_prob[:, :, None, None] {sparse_x_channel_prob[:, :, None, None].shape}")
+            # print(f"sparse_x {sparse_x.shape}")
+            sparse_x = sparse_x * ( (sparse_channel_mask + sparse_x_channel_prob - sparse_x_channel_prob.detach())[:, :, None, None])
+
+            ## complementary loss
+            ## selected channel original x should spatially sum up to one
+            # gather the select channel
+            index = index.unsqueeze(-1).unsqueeze(-1).repeat(1, 1, h, w)
+            selected_channel_x = torch.gather(x_shape_abs, 1, index) # [n, keep_top_num, h, w]
+            selected_channel_x = selected_channel_x / selected_channel_x.sum((2, 3), keepdim=True)
+            reg = ((selected_channel_x.sum((1)) - torch.ones(n, h, w).to(device))**2).mean() * self.lambda_reg_map_coverage
+
+
+
+
+
+            ######
+            ###### Regularize
+            ######
+            # apply l1 norm regularization in each channel to induce sparsity
+            reg += x_shape_abs.mean() * self.lambda_activation_l1_norm
+
+            # regularize the gradient compactness in each channel
+            x_coord_prob = x_shape_abs.sum(3).reshape(n * c, h) # [n * c, h]
+            y_coord_prob = x_shape_abs.sum(2).reshape(n * c, w) # [n * c, w]
+            # ## want the x/y mass more concentrated
+            # print(f"grad_magnitude.sum((1, 2, 3)) {grad_magnitude.sum((1, 2, 3)).shape}")
+            # print(f"grad_magnitude.sum((2, 3)) {grad_magnitude.sum((2, 3)).shape}")
+            weighted_by_magnitude = (x_shape_abs.sum((2, 3)) / x_shape_abs.sum((1, 2, 3)).reshape(-1, 1)).reshape(n * c, )
+            x_coord_entropy = Categorical(probs = x_coord_prob).entropy() * weighted_by_magnitude# weighted by the total magnitude of that channel
+            y_coord_entropy = Categorical(probs = y_coord_prob).entropy() * weighted_by_magnitude
+            regularize_locality = - (x_coord_entropy.mean() + y_coord_entropy.mean()) * self.lambda_locality # negative since topk activation tends to be together
+            reg = reg + regularize_locality
+
+            return sparse_x, reg
+        else:
+            raise NotImplementedError(f"mode {float(self.mode)} not implemented")
+

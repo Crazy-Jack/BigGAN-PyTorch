@@ -521,6 +521,8 @@ def prepare_parser():
         help="indicating if test all batch vc in 5.0 + models")
     parser.add_argument("--eval_image_indexs", type=int, nargs='+', default=[1,], help="image index that want to eval for intermediates activation")
 
+    # linear combination of vc
+    parser.add_argument("--lambda_l1_reg_dot", type=float, default=10, help="for sparsity mode: linear_comb_vc, lambda for l1 regularized weights across all vcs")
 
     return parser
 

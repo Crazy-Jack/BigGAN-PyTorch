@@ -18,19 +18,19 @@ python ../../train.py \
 --use_multiepoch_sampler \
 --pbar tqdm \
 --inference_nosample \
---experiment_name sobel_sparse_resolution_64_10percent_mode_1.2 \
---sparsity_resolution 64 --sparsity_ratio 15 \
+--experiment_name regularized_sparse_hw_topk_mode_1.0 \
+--sparsity_resolution 128 --sparsity_ratio 10 \
 --save_weights \
 --encoder Resnet-18 \
---sparsity_mode gradient_topk_mode_1.2 \
+--sparsity_mode regularized_sparse_hw_topk_mode_1.0 \
 --sparse_decay_rate 1e-3 \
 --no_adaptive_tau \
 --num_epochs 1000 \
---lambda_g_additional 10 \
+--lambda_g_additional 1 \
 --eval_image_indexs 0 1 2 3 35 \
+--img_pool_size 20 \
 --resume \
 
 
 # dev log
 # for 1.1, we regularize the l1 norm of the gradient map 
-# for 1.2, we sparse channels as well

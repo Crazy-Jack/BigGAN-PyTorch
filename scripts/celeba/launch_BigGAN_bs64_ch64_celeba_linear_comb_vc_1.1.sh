@@ -18,19 +18,21 @@ python ../../train.py \
 --use_multiepoch_sampler \
 --pbar tqdm \
 --inference_nosample \
---experiment_name sobel_sparse_resolution_64_10percent_mode_1.2 \
---sparsity_resolution 64 --sparsity_ratio 15 \
+--experiment_name linear_vc_comb_mode_1.1 \
+--sparsity_resolution 32 --sparsity_ratio 10 \
 --save_weights \
 --encoder Resnet-18 \
---sparsity_mode gradient_topk_mode_1.2 \
+--sparsity_mode linear_vc_comb_mode_1.1 \
 --sparse_decay_rate 1e-3 \
 --no_adaptive_tau \
+--vc_dict_size 2500 \
 --num_epochs 1000 \
+--patchGAN \
 --lambda_g_additional 10 \
---eval_image_indexs 0 1 2 3 35 \
---resume \
+--lambda_l1_reg_dot 1.0 \
+--img_pool_size 20 \
+# --resume \
 
-
-# dev log
-# for 1.1, we regularize the l1 norm of the gradient map 
-# for 1.2, we sparse channels as well
+### LOG ###
+# in 1.0 linear comb, 
+# regularize the vc weights with lambda 1

@@ -26,6 +26,7 @@ class NeuralConvSelection(nn.Module):
                     sparse_vc_prob_interaction=4, vc_type="parts", test=False, pull_vc_activation=0.25):
         super(NeuralConvSelection, self).__init__()
         self.kernel_size = kernel_size
+        self.ch = ch
         self.which_mask = which_mask
         self.test = test 
         self.pull_vc_activation = pull_vc_activation
@@ -75,11 +76,24 @@ class NeuralConvSelection(nn.Module):
         elif float(which_mask) >= 7.0 and (float(which_mask) < 8.0):
             # condition on vc to force network learn different output
             if float(which_mask) == 7.0:
-                self.generate_mask = GenerateMask_3_0(ch, resolution=kernel_size, or_cadidate=vc_dict_size, \
+                self.generate_mask = GenerateMask_4_0(ch, resolution=kernel_size, or_cadidate=vc_dict_size, \
                                                     sparse_vc_prob_interaction=sparse_vc_prob_interaction, \
-                                                    warmup=54360,
+                                                    warmup=543600,
                                                     vc_type=vc_type, reg_entropy=True, no_map=True, pull_vc_activation=[self.pull_vc_activation,])
-            
+                self.integrate_vc_activation = nn.Sequential(
+                        nn.Linear(ch * 2, int(ch * 3)),
+                        nn.LeakyReLU(0.2),
+                        nn.Linear(int(ch * 3), int(ch * 3)),
+                        nn.LeakyReLU(0.2),
+                        nn.Linear(int(ch * 3), ch),
+                        nn.Tanh()
+                    )
+                self.force_output_contain_vc = nn.Sequential(
+                        nn.Linear(ch, int(ch * 3)),
+                        nn.LeakyReLU(0.2),
+                        nn.Linear(int(ch * 3), ch),
+                        nn.LeakyReLU(0.2),
+                    )
         else:
             raise NotImplementedError(f"which_mask {which_mask} is not implemented in NeuralConvSelection module")
         
@@ -120,16 +134,23 @@ class NeuralConvSelection(nn.Module):
             integrated_output = self.integrate_mask_activation(integrate_input) # [n * L, c]
             # print(f"integreated mask activation ===================== {integrated_output.mean()}")
             return integrated_output.view(-1, L, c), neg_entorpy  # [n, L, c], scaler
-        elif float(self.which_mask) >= 6.0:
+        elif float(self.which_mask) >= 6.0 and (float(self.which_mask) < 7.0):
             # introduce maximun entropy 
             vc, sim_map_max, neg_entorpy = self.generate_mask(x, test=self.test) # [n * L, c], None, scaler
             
             # print(f"integreated mask activation ===================== {integrated_output.mean()}")
             return vc.view(-1, L, c), neg_entorpy  # [n, L, c], scaler
-
- 
-
-
+        elif float(self.which_mask) >= 7.0:
+            if float(self.which_mask) == 7.0:
+                vc_activation, sim_map_max, additional = self.generate_mask(x, test=self.test) # [n * L, 2c], [n * L, 1, h, w], scaler
+                # integrate_input
+                integrated_output = self.integrate_vc_activation(vc_activation) # [n *L, 2c] -> [n *L, c]
+                # make the integrated_output contain vc information
+                approx_vc = self.force_output_contain_vc(integrated_output)
+                loss_use_vc = ((approx_vc - vc_activation[:, c:])**2).mean() * 100
+                print(f"loss_use_vc {loss_use_vc}")
+                additional += loss_use_vc
+                return integrated_output.view(-1, L, c), additional
 
 
 
@@ -147,7 +168,7 @@ class SparseNeuralConv(nn.Module):
         self.mode = mode
         self.test = test
         
-        if (float(self.mode) < 4.0) or (float(self.mode) >= 5.0 and float(self.mode) < 7.0):
+        if (float(self.mode) < 4.0) or (float(self.mode) >= 5.0 and float(self.mode) < 8.0):
             self.select = NeuralConvSelection(ch, resolution, kernel_size, vc_dict_size, no_attention=no_attention_select, which_mask=mode, \
                                                 sparse_vc_prob_interaction=sparse_vc_prob_interaction, \
                                                 test=self.test)
@@ -228,7 +249,7 @@ class SparseNeuralConv(nn.Module):
 
             x = x1 + x2 
             return x, None # [n, c, h, w]
-        elif float(self.mode) >= 5.0 and float(self.mode) < 7.0:
+        elif float(self.mode) >= 5.0 and float(self.mode) < 9.0:
             # in 5.0, introduce maximum entropy princinple
             # print("IN 5.0")
             vcs, neg_entorpy = self.select(x) # [n, L, c]

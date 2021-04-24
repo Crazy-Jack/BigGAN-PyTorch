@@ -18,17 +18,17 @@ python ../../train.py \
 --use_multiepoch_sampler \
 --pbar tqdm \
 --inference_nosample \
---experiment_name sobel_sparse_resolution_64_10percent_mode_1.2 \
+--experiment_name sobel_sparse_resolution_64_10percent_mode_1.3 \
 --sparsity_resolution 64 --sparsity_ratio 15 \
 --save_weights \
 --encoder Resnet-18 \
---sparsity_mode gradient_topk_mode_1.2 \
+--sparsity_mode gradient_topk_mode_1.3 \
 --sparse_decay_rate 1e-3 \
 --no_adaptive_tau \
 --num_epochs 1000 \
---lambda_g_additional 10 \
+--lambda_g_additional 5 \
 --eval_image_indexs 0 1 2 3 35 \
---resume \
+# --resume \
 
 
 # dev log

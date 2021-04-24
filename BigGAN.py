@@ -80,7 +80,7 @@ class Generator(nn.Module):
                  sparsity_mode="spread", sparse_decay_rate=1e-4, no_adaptive_tau=False, local_reduce_factor=4, test_layer=-1, 
                  test_target_block="", select_index=-1, gumbel_temperature=1.0, 
                  conv_select_kernel_size=5, vc_dict_size=150, sparse_vc_interaction_num=4, sparse_vc_prob_interaction=4, 
-                 test_all=False, **kwargs):
+                 test_all=False, lambda_l1_reg_dot=10, **kwargs):
         super(Generator, self).__init__()
         # Channel width mulitplier
         self.ch = G_ch
@@ -131,7 +131,7 @@ class Generator(nn.Module):
         self.test_target_block = None if test_target_block == "" else [int(i) for i in test_target_block.split("_")]
         self.select_index = [int(i) for i in select_index.split("_")] if "_" in select_index else int(select_index) # for eval single vc
         self.gumbel_temperature = gumbel_temperature
-
+        self.lambda_l1_reg_dot = lambda_l1_reg_dot
         # conv select
         self.conv_select_kernel_size = conv_select_kernel_size
         self.vc_dict_size = vc_dict_size
@@ -340,6 +340,17 @@ class Generator(nn.Module):
                             self.arch['resolution'][index])
                         self.mode = self.sparsity_mode.split("_")[-1]
                         self.blocks[-1] += [layers.SparseGradient_HW(sparse_percent, mode=self.mode)]
+                    elif 'regularized_sparse_hw_topk_mode_' in self.sparsity_mode:
+                        print(f'Adding {self.sparsity_mode} layer in G at resolution %d ... ' % 
+                            self.arch['resolution'][index])
+                        self.mode = self.sparsity_mode.split("_")[-1]
+                        self.blocks[-1] += [layers.NewSparseHW(sparse_percent, mode=self.mode)]
+                    elif 'linear_vc_comb_mode_' in self.sparsity_mode:
+                        self.mode = self.sparsity_mode.split("_")[-1]
+                        self.blocks[-1] += [layers.LinearCombineVC(sparse_percent, visual_concept_pool_size=self.vc_dict_size, \
+                                                        visual_concept_dim=self.arch['out_channels'][index], \
+                                                        mode=self.mode, lambda_l1_reg_dot=self.lambda_l1_reg_dot, \
+                                                        test=self.test_all)]
                     else:
                         raise NotImplementedError(f"Sparsity Mode Invalid: {self.sparsity_mode}")
 
@@ -445,12 +456,15 @@ class Generator(nn.Module):
                     else:
                         tau = min(iter_num * self.sparse_decay_rate, 1)
                     h = block(h, tau, device=device)
-                elif block.myid == 'sparse_sobel_hw':
+                elif block.myid in ['sparse_sobel_hw', 'regularized_sparse_hw']:
                     tau = 1.0
                     h, regularization = block(h, tau, device=device)
                     sparse_block_str = "{}_{}".format(index, block_idx)
                     # print(f"sparse_block_str {sparse_block_str}")
                     intermediates['sparse_block'].append(sparse_block_str) # append sparsity block id for eval on the fly
+                
+                elif block.myid == 'linear_comb_vc':
+                    h, regularization = block(h, device=device)
                 
                 elif block.myid == 'local_modular_hyper_col':
                     if (not self.training) and (self.test_layer == index) and (not normal_eval):
