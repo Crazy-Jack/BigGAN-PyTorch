@@ -1,32 +1,85 @@
-import torch 
-import torch.nn as nn 
-import torchvision 
-import os
+''' Layers
+    This file contains various layers for the BigGAN models.
+'''
+import functools
+
+import numpy as np
+import torch
+import torch.nn as nn
+from torch.nn import init
+import torch.optim as optim
+import torch.nn.functional as F
+from torch.nn import Parameter as P
+from torch.autograd import Variable
+
+from sync_batchnorm import SynchronizedBatchNorm2d as SyncBN2d
+
+from layer_conv_select import SparseNeuralConv
+from layer_vc_linear_comb import LinearCombineVC
+from layer_conv_select_multiple_path import SparseNeuralConvMulti
+from torch.distributions import Categorical
+from layers import SNConv2d
 
 
+# the original attention was self-attention
+# here is an attention module to be used by memory bank
+class ConceptAttention(nn.Module):
+    def __init__(self, ch, which_conv=SNConv2d):
+        super(Attention, self).__init__()
+        self.myid = "atten"
+        # Channel multiplier
+        self.ch = ch
+        self.which_conv = which_conv
+        self.theta = self.which_conv(
+            self.ch, self.ch // 2, kernel_size=1, padding=0, bias=False)
+        self.phi = self.which_conv(
+            self.ch, self.ch // 2, kernel_size=1, padding=0, bias=False)
+        self.g = self.which_conv(
+            self.ch, self.ch // 2, kernel_size=1, padding=0, bias=False)
+        self.o = self.which_conv(
+            self.ch // 2, self.ch, kernel_size=1, padding=0, bias=False)
+        # Learnable gain parameter
+        self.gamma = P(torch.tensor(0.), requires_grad=True)
 
-class ConceptPool(nn.Module):
-    """concept pool that contains multiple concepts"""
-    def __init__(self, num_k=20, pool_size_per_cluster=100, feature_dim=128):
-        
+    def forward(self, x, y):
+        # x from encoder (N x 128 x 128), 64 (64 is the feature map size of that layer
+        # y from memory bank 512, 64
+        # Apply convs
+        theta = self.theta(x)
+        phi = self.phi(y)
+        g = self.g(y)
+        # phi = F.max_pool2d(self.phi(x), [2, 2])
+        # g = F.max_pool2d(self.g(x), [2, 2])
+        # Perform reshapes
+        theta = theta.view(-1, self.ch // 2, x.shape[2] * x.shape[3])
+        phi = phi.view(-1, self.ch // 2, y.shape[0])
+        g = g.view(-1, self.ch // 2, y.shape[0])
+        # Matmul and softmax to get attention maps
+        beta = F.softmax(torch.bmm(theta.transpose(1, 2), phi), -1)
+        # Attention map times g path
+        o = self.o(torch.bmm(g, beta.transpose(1, 2)).view(-1,
+                                                           self.ch // 2, x.shape[2], x.shape[3]))
+        return self.gamma * o + x
 
 
+class MemoryClusterAttention(nn.Module):
+    def __init__(self, dim=64, n_embed=512):
+        super().__init__()
 
+        self.dim = dim   # set to 64 currently
+        self.n_embed = n_embed   # vq vae use 512, maybe we can use the same?
 
+        embed = torch.randn(n_embed, dim)
+        self.register_parameter("embed", embed)
+        self.attention_module = ConceptAttention(dim)
 
+        # currently dont need them as we don't have multiple clusters
+        # self.register_buffer("cluster_size", torch.zeros(n_embed))
+        # self.register_buffer("embed_avg", embed.clone())
 
-class ConceptAttentionProto(nn.Module):
-    """concept attention with prototype to reduce attention time"""
-    def __init__(self, topk, visual_concept_pool_size, visual_concept_dim, mode, lambda_l1_reg_dot=1, test=False):
-        super(ConceptAttentionProto, self).__init__()
-        self.register_buffer('', torch.zeros(K, dtype=torch.long))
-        
-    def forward(self, x, device="cuda"):
-        n, c, h, w = x.shape 
+    def attend_to_memory_bank(self, x):
+        return self.attention_module.forward(x, self.embed)
 
-        # 
-
-
-
-
-
+    def forward(self, input: torch.Tensor):
+        # input_dim [batch_size, emb_dim, h, w]
+        return self.attend_to_memory_bank(input)
