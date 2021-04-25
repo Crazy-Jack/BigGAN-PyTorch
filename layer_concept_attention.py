@@ -4,22 +4,25 @@ import torchvision
 import os
 
 
+class ConceptAttentionProto(nn.Module):
+    """concept attention"""
+    def __init__(self, ):
+        self.pool_size_per_cluster = pool_size_per_cluster
+        self.num_k = num_k
+        self.feature_dim = feature_dim
+        self.register_buffer('concept_pool', torch.zeros(self.num_k * self.pool_size_per_cluster, self.feature_dim))
+        # concept pool is arranged as memory cell, i.e. linearly arranged as a 2D tensor
 
-class ConceptPool(nn.Module):
-    """concept pool that contains multiple concepts"""
-    def __init__(self, num_k=20, pool_size_per_cluster=100, feature_dim=128):
+        # states that indicating the warmup
+        self.warmup_state = 1
+    
+
+    def get_cluster_ptr(self, cluster_num):
+        """get starting pointer for cluster_num"""
+        assert cluster_num < self.num_k, f"cluster_num {cluster_num} out of bound (totally has {self.num_k} clusters)"
         
 
-
-
-
-
-
-class ConceptAttentionProto(nn.Module):
-    """concept attention with prototype to reduce attention time"""
-    def __init__(self, topk, visual_concept_pool_size, visual_concept_dim, mode, lambda_l1_reg_dot=1, test=False):
-        super(ConceptAttentionProto, self).__init__()
-        self.register_buffer('', torch.zeros(K, dtype=torch.long))
+        
         
     def forward(self, x, device="cuda"):
         n, c, h, w = x.shape 

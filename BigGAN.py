@@ -529,7 +529,7 @@ class Generator(nn.Module):
                             h = block(h, y_hack, nobn=False)
                         
                     else:
-                        h = block(h, ys[index])
+                        h = block(h, ys[index])  # prev_h: n, c, h, w
 
                     
                 # impose sparsity constraint for the activation

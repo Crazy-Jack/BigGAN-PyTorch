@@ -19,6 +19,7 @@ python ../../train.py \
 --pbar tqdm \
 --inference_nosample \
 --experiment_name concept_attention_prototype \
+--sparsity_mode new_mode \
 --save_weights \
 --encoder Resnet-18 \
 --no_adaptive_tau \
