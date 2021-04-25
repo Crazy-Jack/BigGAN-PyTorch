@@ -14,6 +14,7 @@ import torchvision.models as vision_models
 
 
 import layers
+from layer_concept_attention import MemoryClusterAttention
 from sync_batchnorm import SynchronizedBatchNorm2d as SyncBatchNorm2d
 
 # Architectures for G
@@ -23,6 +24,7 @@ def G_arch(ch=64, attention='64', ksize='333333', dilation='111111', sparsity_re
     arch = {}
     if not no_sparsity:
         assert len(sparsity_resolution.split('_')) == len(sparsity_ratio.split('_')), "length sparsity and sparsity_ratio doesn't match"
+
         sparsity_pairs = {pair[0]: 0.01 * pair[1] for pair in zip([int(resolute) for resolute in sparsity_resolution.split('_')], [int(ratio) for ratio in sparsity_ratio.split('_')])}
     else:
         sparsity_pairs = {}
@@ -206,10 +208,15 @@ class Generator(nn.Module):
 
             # If attention on this block, attach it to the end
             if self.arch['attention'][self.arch['resolution'][index]]:
-                print('Adding attention layer in G at resolution %d' %
-                      self.arch['resolution'][index])
-                self.blocks[-1] += [layers.Attention(
-                    self.arch['out_channels'][index], self.which_conv)]
+                if attend_mode == 'concept_attention':
+                    print('Adding Concept attention layer in G at resolution %d' %
+                          self.arch['resolution'][index])
+                    self.blocks[-1] += [MemoryCluster()]
+                else:
+                    print('Adding attention layer in G at resolution %d' %
+                          self.arch['resolution'][index])
+                    self.blocks[-1] += [layers.Attention(
+                        self.arch['out_channels'][index], self.which_conv)]
             
             if not no_sparsity:
                 # If sparsity on this block, attach it to the end
@@ -351,6 +358,13 @@ class Generator(nn.Module):
                                                         visual_concept_dim=self.arch['out_channels'][index], \
                                                         mode=self.mode, lambda_l1_reg_dot=self.lambda_l1_reg_dot, \
                                                         test=self.test_all)]
+                    elif 'concept_attention_mode_' in self.sparsity_mode:
+                        self.mode = self.sparsity_mode.split("_")[-1]
+                        self.blocks[-1] += [
+                            layers.LinearCombineVC(sparse_percent, visual_concept_pool_size=self.vc_dict_size, \
+                                                   visual_concept_dim=self.arch['out_channels'][index], \
+                                                   mode=self.mode, lambda_l1_reg_dot=self.lambda_l1_reg_dot, \
+                                                   test=self.test_all)]
                     else:
                         raise NotImplementedError(f"Sparsity Mode Invalid: {self.sparsity_mode}")
 
