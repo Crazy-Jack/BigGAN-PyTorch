@@ -11,13 +11,10 @@ import torch.optim as optim
 import torch.nn.functional as F
 from torch.nn import Parameter as P
 from torch.autograd import Variable
-
+import faiss
 
 from sync_batchnorm import SynchronizedBatchNorm2d as SyncBN2d
 
-from layer_conv_select import SparseNeuralConv
-from layer_vc_linear_comb import LinearCombineVC
-from layer_conv_select_multiple_path import SparseNeuralConvMulti
 from torch.distributions import Categorical
 from layers import SNConv2d
 
@@ -25,13 +22,14 @@ from layers import SNConv2d
 class ConceptAttentionProto(nn.Module):
     """concept attention"""
     def __init__(self, pool_size_per_cluster, num_k, feature_dim, warmup_total_iter=1000, device='cuda'):
+        super(ConceptAttentionProto, self).__init__()
         self.device = device
         self.pool_size_per_cluster = pool_size_per_cluster
         self.num_k = num_k
         self.feature_dim = feature_dim
         self.total_pool_size = self.num_k * self.pool_size_per_cluster
-        self.register_buffer('concept_pool', torch.zeros(self.feature_dim, self.total_pool_size))
-        self.register_buffer('concept_proto', torch.zeros(self.feature_dim, self.num_k))
+        self.register_buffer('concept_pool', torch.rand(self.feature_dim, self.total_pool_size))
+        self.register_buffer('concept_proto', torch.rand(self.feature_dim, self.num_k))
         # concept pool is arranged as memory cell, i.e. linearly arranged as a 2D tensor, use get_cluster_ptr to get starting pointer for each cluster
         
 
@@ -44,6 +42,7 @@ class ConceptAttentionProto(nn.Module):
         # register attention module
         self.attention_module = ConceptAttention(self.feature_dim)
 
+        
 
     def get_cluster_ptr(self, cluster_num):
         """get starting pointer for cluster_num"""
@@ -52,13 +51,20 @@ class ConceptAttentionProto(nn.Module):
     
     def _update_pool(self, index, content):
         """update concept pool according to the content"""
-        assert (index >= self.total_pool_size).sum() == 0, f"index contains index that larger/equal to pool size"
-        assert len(index.shape) = 1
+        assert len(index.shape) == 1
         assert content.shape[1] == index.shape[0]
         assert content.shape[0] == self.feature_dim
         
-        self.concept_pool[:, index] = content 
+        print("Updating concept pool...")
+        self.concept_pool[:, index] = content
     
+    def _update_prototypes(self, index, content):
+        assert len(index.shape) == 1
+        assert content.shape[1] == index.shape[0]
+        assert content.shape[0] == self.feature_dim
+        print("Updating prototypes...")
+        self.concept_proto[:, index] = content
+
     def pool_kmean_init(self, seed=0, gpu_num=0, temperature=1):
         """TODO: clear up
         perform kmeans for cluster concept pool initialization
@@ -68,15 +74,16 @@ class ConceptAttentionProto(nn.Module):
         
         print('performing kmeans clustering')
         results = {'im2cluster':[],'centroids':[],'density':[]}
-        x = self.concept_pool.clone().cpu().numpy()
+        x = self.concept_pool.clone().cpu().numpy().T
+        x = np.ascontiguousarray(x)
         num_cluster = self.num_k
         # intialize faiss clustering parameters
         d = x.shape[1]
         k = int(num_cluster)
         clus = faiss.Clustering(d, k)
         clus.verbose = True
-        clus.niter = 20
-        clus.nredo = 5
+        clus.niter = 100
+        clus.nredo = 10
         clus.seed = seed
         clus.max_points_per_centroid = 1000
         clus.min_points_per_centroid = 10
@@ -114,6 +121,7 @@ class ConceptAttentionProto(nn.Module):
                 density[i] = dmax 
 
         density = density.clip(np.percentile(density,10),np.percentile(density,90)) #clamp extreme values for stability
+        print(density.mean())
         density = temperature*density/density.mean()  #scale the mean to temperature 
         
         # convert to cuda Tensors for broadcast
@@ -127,7 +135,66 @@ class ConceptAttentionProto(nn.Module):
         results['density'].append(density)
         results['im2cluster'].append(im2cluster)    
         
-        return results    
+        # rearrange
+        self.structure_memory_bank(results) 
+        print("Finish kmean init...")
+
+
+    def get_cluster_num_index(self, idx):
+        assert idx < self.total_pool_size
+        return idx // self.pool_size_per_cluster
+
+
+    def structure_memory_bank(self, cluster_results):
+        """make memory bank structured """
+        centeriod = cluster_results['centroids'][0] # [num_k, feature_dim]
+        cluster_assignment = cluster_results['im2cluster'][0] # [total_pool_size,]
+        
+        mem_index = torch.zeros(self.total_pool_size).long() # array of memory index that contains instructions of how to rearange the memory into structured clusters
+        memory_states = torch.zeros(self.num_k,).long() # 0 indicate the cluster has not finished structured
+        memory_cluster_insert_ptr = torch.zeros(self.num_k,).long() # ptr to each cluster block
+
+        # loop through every cluster assignment to populate the concept pool for each cluster seperately
+        for idx, i in enumerate(cluster_assignment):
+            cluster_num = self.get_cluster_num_index(i)
+            if memory_states[cluster_num] == 0:
+                
+                # manipulating the index for populating memory
+                mem_index[cluster_num * self.pool_size_per_cluster + memory_cluster_insert_ptr[cluster_num]] = idx  
+
+                memory_cluster_insert_ptr[cluster_num] += 1
+                if memory_cluster_insert_ptr[cluster_num] == self.pool_size_per_cluster:
+                    memory_states[cluster_num] = 1
+            else:
+                # check if the ptr for this class is set to the last point
+                assert memory_cluster_insert_ptr[cluster_num] == self.pool_size_per_cluster
+        
+        # what if some cluster didn't get populated enough? -- replicate
+        not_fill_cluster = torch.where(memory_states == 0)[0]
+        for unfill_cluster in not_fill_cluster:
+            cluster_ptr = memory_cluster_insert_ptr[unfill_cluster]
+            existed_index = mem_index[unfill_cluster * self.pool_size_per_cluster : cluster_ptr]
+            replicate_times = self.pool_size_per_cluster // cluster_ptr + 1 # with more replicate and cutoff
+            replicated_index = torch.cat([existed_index for _ in range(replicate_times)])
+            # permutate the replicate and select pool_size_per_cluster num of index
+            replicated_index = replicated_index[torch.randperm(replicated_index.shape[0])][:self.pool_size_per_cluster] # [pool_size_per_cluster, ]
+            # put it back
+            assert replicated_index.shape[0] == self.pool_size_per_cluster, f"replicated_index ({replicated_index}) should has the same len as pool_size_per_cluster ({self.pool_size_per_cluster})"
+            mem_index[unfill_cluster * self.pool_size_per_cluster: (unfill_cluster+1) * self.pool_size_per_cluster] = replicated_index
+            # update ptr
+            memory_cluster_insert_ptr[unfill_cluster] = self.pool_size_per_cluster
+            # update state
+            memory_states[unfill_cluster] = 1
+        
+        assert (memory_states == 0).sum() == 0, f"memory_states has zeros: {memory_states}"
+        assert (memory_cluster_insert_ptr != self.pool_size_per_cluster).sum() == 0, f"memory_cluster_insert_ptr didn't match with pool_size_per_cluster: {memory_cluster_insert_ptr}"
+
+
+        # update the real pool
+        self._update_pool(torch.arange(mem_index.shape[0]), self.concept_pool.clone()[:, mem_index])
+        # initialize the prototype
+        self._update_prototypes(torch.arange(self.num_cluster), self.centeriod.T)
+        print(f"Concept pool updated by kmeans clusters...")
 
 
 
@@ -135,11 +202,12 @@ class ConceptAttentionProto(nn.Module):
         """check if need to switch warup_state to 0; when turn off warmup state, trigger k-means init for clustering"""
         if self.warmup_state:
             if self.warmup_iter_counter > self.warmup_total_iter:
-                self.warmup_state = 0
+                self.warmup_state = 0 # 0 means not in a warmup state
                 # trigger kmean concept pool init
-
+                self.pool_kmean_init()
+                
         else:
-            raise Exception("Calling _check_warmup_state when self.warmup_state is 0")
+            raise Exception("Calling _check_warmup_state when self.warmup_state is 0 (0 means not in warmup state)")
 
 
     def warmup_sampling(self, x):
@@ -184,6 +252,7 @@ class ConceptAttentionProto(nn.Module):
         else:
             # attend to concepts
             # selecting 
+            
 
             
 
@@ -196,7 +265,7 @@ class ConceptAttentionProto(nn.Module):
 # here is an attention module to be used by memory bank
 class ConceptAttention(nn.Module):
     def __init__(self, ch, which_conv=SNConv2d):
-        super(Attention, self).__init__()
+        super(ConceptAttention, self).__init__()
         self.myid = "atten"
         # Channel multiplier
         self.ch = ch
@@ -235,7 +304,7 @@ class ConceptAttention(nn.Module):
 
 class MemoryClusterAttention(nn.Module):
     def __init__(self, dim=64, n_embed=512):
-        super().__init__()
+        super(MemoryClusterAttention, self).__init__()
 
         self.dim = dim   # set to 64 currently
         self.n_embed = n_embed   # vq vae use 512, maybe we can use the same?
@@ -254,3 +323,9 @@ class MemoryClusterAttention(nn.Module):
     def forward(self, input: torch.Tensor):
         # input_dim [batch_size, emb_dim, h, w]
         return self.attend_to_memory_bank(input)
+
+
+
+if __name__ == '__main__':
+    concept_atten_proto = ConceptAttentionProto(pool_size_per_cluster=100, num_k=20, feature_dim=128)
+    results_kmean = concept_atten_proto.pool_kmean_init()
