@@ -82,7 +82,7 @@ class Generator(nn.Module):
                  sparsity_mode="spread", sparse_decay_rate=1e-4, no_adaptive_tau=False, local_reduce_factor=4, test_layer=-1, 
                  test_target_block="", select_index=-1, gumbel_temperature=1.0, 
                  conv_select_kernel_size=5, vc_dict_size=150, sparse_vc_interaction_num=4, sparse_vc_prob_interaction=4, 
-                 test_all=False, lambda_l1_reg_dot=10, **kwargs):
+                 test_all=False, lambda_l1_reg_dot=10, attend_mode='concept_attention', **kwargs):
         super(Generator, self).__init__()
         # Channel width mulitplier
         self.ch = G_ch
@@ -211,7 +211,7 @@ class Generator(nn.Module):
                 if attend_mode == 'concept_attention':
                     print('Adding Concept attention layer in G at resolution %d' %
                           self.arch['resolution'][index])
-                    self.blocks[-1] += [MemoryCluster()]
+                    self.blocks[-1] += [MemoryClusterAttention(self.arch['out_channels'][index])]
                 else:
                     print('Adding attention layer in G at resolution %d' %
                           self.arch['resolution'][index])
@@ -543,7 +543,7 @@ class Generator(nn.Module):
                             h = block(h, y_hack, nobn=False)
                         
                     else:
-                        h = block(h, ys[index])  # prev_h: n, c, h, w
+                        h = block(h, ys[index])
 
                     
                 # impose sparsity constraint for the activation

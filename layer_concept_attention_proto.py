@@ -23,6 +23,7 @@ class ConceptAttentionProto(nn.Module):
     """concept attention"""
     def __init__(self, ch, which_conv, pool_size_per_cluster, num_k, feature_dim, warmup_total_iter=1000, momentum=0.3, device='cuda'):
         super(ConceptAttentionProto, self).__init__()
+        self.myid = "atten_prototypes"
         self.device = device
         self.pool_size_per_cluster = pool_size_per_cluster
         self.num_k = num_k
@@ -56,12 +57,9 @@ class ConceptAttentionProto(nn.Module):
         # self.momentum
         self.momentum = momentum
         
-
-    def get_cluster_ptr(self, cluster_num):
-        """get starting pointer for cluster_num"""
-        assert cluster_num < self.num_k, f"cluster_num {cluster_num} out of bound (totally has {self.num_k} clusters)"
-        return self.pool_size_per_cluster * cluster_num
-    
+    #############################
+    #       Pool operation      #
+    #############################
     def _update_pool(self, index, content):
         """update concept pool according to the content
         index: [m, ]
@@ -81,11 +79,35 @@ class ConceptAttentionProto(nn.Module):
         print("Updating prototypes...")
         self.concept_proto[:, index] = content
 
+
     def computate_prototypes(self):
         """compute prototypes based on current pool"""
         assert self.warmup_state == 0, "still in warm up state, computing prototypes is forbidden"
         self.concept_proto = self.concept_pool.detach().clone().reshape(self.feature_dim, self.num_k, self.pool_size_per_cluster).mean(2)
 
+    def forward_update_pool(self, activation, cluster_num, momentum=None):
+        """update activation into the concept pool after warmup in each forward pass
+        activation: [m, c]
+        cluster_num: [m, ]
+        momentum: None or a float scalar
+        """
+
+        if not momentum:
+            momentum = 1.
+        
+        # generate update index
+        assert cluster_num.max() < self.num_k
+        # index the starting pointer of each cluster add a rand num
+        index = cluster_num * self.pool_size_per_cluster + torch.randint(self.pool_size_per_cluster, size=(cluster_num.shape[0],))
+        
+
+        # adding momentum to activation
+        self.concept_pool[:, index] = (1. - momentum) * self.concept_pool[:, index].clone() + momentum * activation.T
+        
+
+    #############################
+    # Initialization and warmup #
+    #############################
     def pool_kmean_init(self, seed=0, gpu_num=0, temperature=1):
         """TODO: clear up
         perform kmeans for cluster concept pool initialization
@@ -159,11 +181,6 @@ class ConceptAttentionProto(nn.Module):
         # rearrange
         self.structure_memory_bank(results) 
         print("Finish kmean init...")
-
-
-    def get_cluster_num_index(self, idx):
-        assert idx < self.total_pool_size
-        return idx // self.pool_size_per_cluster
 
 
     def structure_memory_bank(self, cluster_results):
@@ -259,30 +276,9 @@ class ConceptAttentionProto(nn.Module):
         # update number
         self.warmup_iter_counter += 1
 
-
-    def forward_update_pool(self, activation, cluster_num, momentum=None):
-        """update activation into the concept pool
-        activation: [m, c]
-        cluster_num: [m, ]
-        momentum: None or a float scalar
-        """
-
-        if not momentum:
-            momentum = 1.
-        
-        # generate update index
-        assert cluster_num.max() < self.num_k
-        # index the starting pointer of each cluster add a rand num
-        index = cluster_num * self.pool_size_per_cluster + torch.randint(self.pool_size_per_cluster, size=(cluster_num.shape[0],))
-        
-
-        # adding momentum to activation
-        self.concept_pool[:, index] = (1. - momentum) * self.concept_pool[:, index].clone() + momentum * activation.T
-        
-
-
-
-
+    #############################
+    #       Forward logic       #
+    #############################
     def forward(self, x, device="cuda"):
 
         # warmup
@@ -367,5 +363,18 @@ class ConceptAttentionProto(nn.Module):
             return out * self.gamma + x
             
 
+    #############################
+    #     Helper  function      #
+    #############################
 
+    def get_cluster_num_index(self, idx):
+        assert idx < self.total_pool_size
+        return idx // self.pool_size_per_cluster
+    
+
+    def get_cluster_ptr(self, cluster_num):
+        """get starting pointer for cluster_num"""
+        assert cluster_num < self.num_k, f"cluster_num {cluster_num} out of bound (totally has {self.num_k} clusters)"
+        return self.pool_size_per_cluster * cluster_num
+    
             
