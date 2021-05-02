@@ -16,14 +16,13 @@ import faiss
 from sync_batchnorm import SynchronizedBatchNorm2d as SyncBN2d
 
 from torch.distributions import Categorical
-from layers import SNConv2d
 
 
 class ConceptAttentionProto(nn.Module):
     """concept attention"""
     def __init__(self, ch, which_conv, pool_size_per_cluster, num_k, feature_dim, warmup_total_iter=1000, momentum=0.3, device='cuda'):
         super(ConceptAttentionProto, self).__init__()
-        self.myid = "atten_prototypes"
+        self.myid = "atten_concept_prototypes"
         self.device = device
         self.pool_size_per_cluster = pool_size_per_cluster
         self.num_k = num_k
@@ -60,6 +59,7 @@ class ConceptAttentionProto(nn.Module):
     #############################
     #       Pool operation      #
     #############################
+    @torch.no_grad()
     def _update_pool(self, index, content):
         """update concept pool according to the content
         index: [m, ]
@@ -69,22 +69,24 @@ class ConceptAttentionProto(nn.Module):
         assert content.shape[1] == index.shape[0]
         assert content.shape[0] == self.feature_dim
         
-        print("Updating concept pool...")
-        self.concept_pool[:, index] = content
+        # print("Updating concept pool...")
+        self.concept_pool[:, index] = content.clone()
     
+    @torch.no_grad()
     def _update_prototypes(self, index, content):
         assert len(index.shape) == 1
         assert content.shape[1] == index.shape[0]
         assert content.shape[0] == self.feature_dim
-        print("Updating prototypes...")
-        self.concept_proto[:, index] = content
+        # print("Updating prototypes...")
+        self.concept_proto[:, index] = content.clone()
 
-
+    @torch.no_grad()
     def computate_prototypes(self):
         """compute prototypes based on current pool"""
         assert self.warmup_state == 0, "still in warm up state, computing prototypes is forbidden"
         self.concept_proto = self.concept_pool.detach().clone().reshape(self.feature_dim, self.num_k, self.pool_size_per_cluster).mean(2)
-
+    
+    @torch.no_grad()
     def forward_update_pool(self, activation, cluster_num, momentum=None):
         """update activation into the concept pool after warmup in each forward pass
         activation: [m, c]
@@ -102,7 +104,7 @@ class ConceptAttentionProto(nn.Module):
         
 
         # adding momentum to activation
-        self.concept_pool[:, index] = (1. - momentum) * self.concept_pool[:, index].clone() + momentum * activation.T
+        self.concept_pool[:, index] = (1. - momentum) * self.concept_pool[:, index].clone() + momentum * activation.detach().T
         
 
     #############################
@@ -252,7 +254,7 @@ class ConceptAttentionProto(nn.Module):
         """
         linearly sample input x to make it 
         x: [n, c, h, w]"""
-        n, c, h, w = shape
+        n, c, h, w = x.shape
         assert self.warmup_state, "calling warmup sampling when warmup state is 0"
         
         # evenly distributed across space
@@ -364,7 +366,7 @@ class ConceptAttentionProto(nn.Module):
             
 
     #############################
-    #     Helper  function      #
+    #     Helper  functions     #
     #############################
 
     def get_cluster_num_index(self, idx):

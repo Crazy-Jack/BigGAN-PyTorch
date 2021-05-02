@@ -523,6 +523,15 @@ def prepare_parser():
 
     # linear combination of vc
     parser.add_argument("--lambda_l1_reg_dot", type=float, default=10, help="for sparsity mode: linear_comb_vc, lambda for l1 regularized weights across all vcs")
+    
+    # concept attention
+    parser.add_argument("--attend_mode", type=str, default="")
+    parser.add_argument("--cp_pool_size_per_cluster", type=int, default=100)
+    parser.add_argument("--cp_num_k", type=int, default=20)
+    parser.add_argument("--cp_dim", type=int, default=128)
+    parser.add_argument("--cp_warmup_total_iter", type=int, default=1000)
+    parser.add_argument("--cp_momentum", type=float, default=0.6)
+
 
     return parser
 

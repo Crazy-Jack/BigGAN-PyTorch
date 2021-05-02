@@ -17,6 +17,7 @@ from sync_batchnorm import SynchronizedBatchNorm2d as SyncBN2d
 from layer_conv_select import SparseNeuralConv
 from layer_vc_linear_comb import LinearCombineVC
 from layer_conv_select_multiple_path import SparseNeuralConvMulti
+from layer_concept_attention_proto import ConceptAttentionProto
 from torch.distributions import Categorical
 
 # Projection of x onto y
@@ -159,13 +160,15 @@ class Attention(nn.Module):
     def __init__(self, ch, which_conv=SNConv2d, name='attention'):
         super(Attention, self).__init__()
         self.myid = "atten"
+        
         # Channel multiplier
         self.ch = ch
+        print(f"INSIDE ATTENTION   self.ch // 2 {self.ch // 2}")
         self.which_conv = which_conv
         self.theta = self.which_conv(
-            self.ch, self.ch // 8, kernel_size=1, padding=0, bias=False)
+            self.ch, self.ch // 2, kernel_size=1, padding=0, bias=False)
         self.phi = self.which_conv(
-            self.ch, self.ch // 8, kernel_size=1, padding=0, bias=False)
+            self.ch, self.ch // 2, kernel_size=1, padding=0, bias=False)
         self.g = self.which_conv(
             self.ch, self.ch // 2, kernel_size=1, padding=0, bias=False)
         self.o = self.which_conv(
@@ -179,8 +182,8 @@ class Attention(nn.Module):
         phi = F.max_pool2d(self.phi(x), [2, 2])
         g = F.max_pool2d(self.g(x), [2, 2])
         # Perform reshapes
-        theta = theta.view(-1, self.ch // 8, x.shape[2] * x.shape[3])
-        phi = phi.view(-1, self.ch // 8, x.shape[2] * x.shape[3] // 4)
+        theta = theta.view(-1, self.ch // 2, x.shape[2] * x.shape[3])
+        phi = phi.view(-1, self.ch // 2, x.shape[2] * x.shape[3] // 4)
         g = g.view(-1, self.ch // 2, x.shape[2] * x.shape[3] // 4)
         # Matmul and softmax to get attention maps
         beta = F.softmax(torch.bmm(theta.transpose(1, 2), phi), -1)
@@ -550,7 +553,7 @@ def sparsify_layer(h, tau, sparsity=0.1, device='cuda', mask_base=0.0):
     param: 
       - h: (N, C, H, W)
       - sparsity: float
-    return: 
+    return: layer_concept_attention_proto
       sparse_activation: (N, C, H, W)
     """
     N, C, H, W = h.shape
@@ -700,7 +703,7 @@ class Sparsify_hypercol(nn.Module):
 
             return out
         
-        elif self.mode == "hyper_col_nn_local":
+        elif self.mode == "hyper_col_nnlayer_concept_attention_proto_local":
             transformed_x = self.transform(x) # use 1x1 conv to transform to [n, 1, h, w]
             transformed_x_exp = torch.exp(transformed_x)
             transformed_x_normed = transformed_x_exp / transformed_x_exp.sum((2, 3), keepdim=True) # softmax [n, 1, h, w]

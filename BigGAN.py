@@ -82,7 +82,8 @@ class Generator(nn.Module):
                  sparsity_mode="spread", sparse_decay_rate=1e-4, no_adaptive_tau=False, local_reduce_factor=4, test_layer=-1, 
                  test_target_block="", select_index=-1, gumbel_temperature=1.0, 
                  conv_select_kernel_size=5, vc_dict_size=150, sparse_vc_interaction_num=4, sparse_vc_prob_interaction=4, 
-                 test_all=False, lambda_l1_reg_dot=10, attend_mode='concept_attention', **kwargs):
+                 test_all=False, lambda_l1_reg_dot=10, attend_mode='concept_attention', 
+                 cp_pool_size_per_cluster=100, cp_num_k=20, cp_dim=128, cp_warmup_total_iter=1000, cp_momentum=0.6, **kwargs):
         super(Generator, self).__init__()
         # Channel width mulitplier
         self.ch = G_ch
@@ -139,6 +140,14 @@ class Generator(nn.Module):
         self.vc_dict_size = vc_dict_size
         self.sparse_vc_interaction_num = sparse_vc_interaction_num
         self.sparse_vc_prob_interaction = sparse_vc_prob_interaction
+
+
+        # concept prototype
+        self.cp_pool_size_per_cluster = cp_pool_size_per_cluster
+        self.cp_num_k = cp_num_k
+        self.cp_dim = cp_dim
+        self.cp_warmup_total_iter = cp_warmup_total_iter
+        self.cp_momentum = cp_momentum
         # Architecture dict
         self.arch = G_arch(self.ch, self.attention, sparsity_resolution=self.sparsity_resolution, \
                                 sparsity_ratio=self.sparsity_ratio, no_sparsity=self.no_sparsity)[resolution]
@@ -212,12 +221,21 @@ class Generator(nn.Module):
                     print('Adding Concept attention layer in G at resolution %d' %
                           self.arch['resolution'][index])
                     self.blocks[-1] += [MemoryClusterAttention(self.arch['out_channels'][index])]
+                elif 'concept_proto_attention_' in attend_mode:
+                    print('Adding concept_proto_attention layer in G at resolution %d' %
+                          self.arch['resolution'][index])
+                    version = attend_mode.split("_")[-1]
+                    self.blocks[-1] += [layers.ConceptAttentionProto(self.arch['out_channels'][index], self.which_conv, \
+                        self.cp_pool_size_per_cluster, self.cp_num_k, self.cp_dim, warmup_total_iter=self.cp_warmup_total_iter, momentum=self.cp_momentum)]
                 else:
                     print('Adding attention layer in G at resolution %d' %
                           self.arch['resolution'][index])
                     self.blocks[-1] += [layers.Attention(
                         self.arch['out_channels'][index], self.which_conv)]
             
+
+
+            # sparsity
             if not no_sparsity:
                 # If sparsity on this block, attach it to the end
                 sparse_percent = self.arch['sparsity'][self.arch['resolution'][index]]
@@ -528,6 +546,8 @@ class Generator(nn.Module):
                         elif float(self.conv_sparse_mode) >= 5.0:
                             h, entropy = block(h)
                             entropys += entropy
+                elif block.myid == "atten_concept_prototypes":
+                    h = block(h)
                 else:
                     # one hack
                     if self.test_all:
