@@ -364,14 +364,6 @@ class ConceptAttentionProto(nn.Module):
                 # print(f"cluster_affinity.max(1) {cluster_affinity.max(1)}")
                 cluster_assignment = cluster_affinity.max(1)[1] # [n * h * w, ]
 
-            # update pool first to allow contextual information 
-            # should use the lambda to update concept pool momentumlly
-            self.forward_update_pool(theta, cluster_assignment, momentum=self.cp_momentum)
-
-            # update prototypes
-            self.computate_prototypes()
-
-
             # for loop for each cluster
             # store mapping
 
@@ -403,6 +395,15 @@ class ConceptAttentionProto(nn.Module):
             results_out = torch.transpose(results_out.reshape(c, n, h, w), 0, 1) # n, c, h, w
 
             out = self.o(results_out)
+
+
+            # update pool!!! 
+            # should use the theta to update concept pool momentumlly ?
+            self.forward_update_pool(theta, cluster_assignment, momentum=self.cp_momentum)
+
+            # update prototypes
+            self.computate_prototypes()
+
 
             return out * self.gamma + x
             

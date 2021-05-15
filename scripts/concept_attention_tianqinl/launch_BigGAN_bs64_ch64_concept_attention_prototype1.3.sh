@@ -20,17 +20,18 @@ python ../../train.py \
 --use_multiepoch_sampler \
 --pbar tqdm \
 --inference_nosample \
---experiment_name concept_prototype_momem_attention_1.0_ch94_updatefirst \
+--experiment_name concept_prototype_momem_attention_1.3_moca_ch94_updatefirst \
 --save_weights \
 --encoder Resnet-18 \
 --no_adaptive_tau \
 --no_sparsity \
---attend_mode concept_proto_attention_1.0 \
+--attend_mode concept_proto_moca_1.0 \
 --cp_pool_size_per_cluster 1000 \
 --cp_num_k 20 \
 --cp_dim 64 \
 --cp_warmup_total_iter 10000 \
---cp_momentum 0.6 \
---resume \
+--cp_momentum 1 \
+--cp_phi_momentum 0.95
+# --resume \
 
-# 1.1: use no momentum pool
+# 1.3: use moca: 0.95 momentum, cp_momentum=1

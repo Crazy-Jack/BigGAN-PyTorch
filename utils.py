@@ -531,7 +531,7 @@ def prepare_parser():
     parser.add_argument("--cp_dim", type=int, default=128)
     parser.add_argument("--cp_warmup_total_iter", type=int, default=1000)
     parser.add_argument("--cp_momentum", type=float, default=0.6)
-
+    parser.add_argument("--cp_phi_momentum", type=float, default=0.95)
 
     return parser
 
@@ -584,7 +584,8 @@ dset_dict = {'I32': dset.ImageFolder, 'I64': dset.ImageFolder,
              'I128_hdf5': dset.ILSVRC_HDF5, 'I256_hdf5': dset.ILSVRC_HDF5,
              'C10': dset.CIFAR10, 'C100': dset.CIFAR100,
              'CelebA': dset.ImageFolder,
-             'Church': dset.ImageFolder,}
+             'Church': dset.ImageFolder,
+             'tiny_imagenet': dset.ImageFolder}
 imsize_dict = {'I32': 32, 'I32_hdf5': 32,
                'I64': 64, 'I64_hdf5': 64,
                'I128': 128, 'I128_hdf5': 128,
@@ -592,7 +593,8 @@ imsize_dict = {'I32': 32, 'I32_hdf5': 32,
                'C10': 32, 'C100': 32,
                'Mysmall_128': 128,
                'CelebA': 128,
-               'Church': 128}
+               'Church': 128,
+               'tiny_imagenet': 128}
 root_dict = {'I32': 'ImageNet', 'I32_hdf5': 'ILSVRC32.hdf5',
              'I64': 'ImageNet', 'I64_hdf5': 'ILSVRC64.hdf5',
              'I128': 'ImageNet', 'I128_hdf5': 'ILSVRC128.hdf5',
@@ -600,7 +602,8 @@ root_dict = {'I32': 'ImageNet', 'I32_hdf5': 'ILSVRC32.hdf5',
              'C10': 'cifar', 'C100': 'cifar',
              'Mysmall_128': 'small_dataset',
              'CelebA': 'CelebA',
-             'Church': 'Church'}
+             'Church': 'Church',
+             'tiny_imagenet': 'train'}
 nclass_dict = {'I32': 1000, 'I32_hdf5': 1000,
                'I64': 1000, 'I64_hdf5': 1000,
                'I128': 1000, 'I128_hdf5': 1000,
@@ -608,7 +611,8 @@ nclass_dict = {'I32': 1000, 'I32_hdf5': 1000,
                'C10': 10, 'C100': 100,
                'Mysmall_128': 3,
                'CelebA': 1,
-               'Church': 1}
+               'Church': 1,
+               'tiny_imagenet': 200}
 # Number of classes to put per sample sheet
 classes_per_sheet_dict = {'I32': 50, 'I32_hdf5': 50,
                           'I64': 50, 'I64_hdf5': 50,
@@ -617,7 +621,8 @@ classes_per_sheet_dict = {'I32': 50, 'I32_hdf5': 50,
                           'C10': 10, 'C100': 100,
                           'Mysmall_128': 3,
                           'CelebA': 1,
-                          'Church': 1}
+                          'Church': 1,
+                          'tiny_imagenet': 200}
 activation_dict = {'inplace_relu': nn.ReLU(inplace=True),
                    'relu': nn.ReLU(inplace=False),
                    'ir': nn.ReLU(inplace=True), }
@@ -1346,34 +1351,58 @@ def prepare_x_y(G_batch_size, my_dataset, experiment_name, config, device='cuda'
     # get class conditional indexes from my_dataset
     class_img_path_index = [] # a list to store all index for different class index
     class_inst_num = math.ceil(G_batch_size / num_class)
-
-    for class_index in my_dataset.class_to_idx.values():
-        path_one_class_index = np.where(my_dataset.imgs[:, 1] == str(class_index))[0] # [my_dataset.imgs for i in my_dataset.imgs if int(i[1]) == class_index] # get path for the same class
-        # randomization
-        path_one_class_index_select = np.random.permutation(path_one_class_index)[:class_inst_num]
-        class_img_path_index.extend(path_one_class_index_select)
-
-    if my_dataset.load_in_mem:
-        imgs = [my_dataset.data[i].unsqueeze(0) for i in class_img_path_index]
-        targets = [int(my_dataset.labels[i]) for i in class_img_path_index]
-
-    else:
-        # load data for one batch
+    config['onfly_class_inst_num'] = class_inst_num
+    print(f"config['dataset'] {config['dataset']}")
+    if config['dataset'] == 'C10':
+        for class_index in my_dataset.class_to_idx.values():
+            # print(f"my_dataset.labels {type(my_dataset.labels)} -- {class_index}")
+            index_class = np.where(np.array(my_dataset.labels) == class_index)[0]
+            index_one_class_index_select = np.random.permutation(index_class)[:class_inst_num]
+            class_img_path_index.extend(index_one_class_index_select)
+        print("HellOOOOOOOO")
+        print(f"class_img_path_index {class_img_path_index}")
         imgs = []
         targets = []
-
-        for pt_idx in class_img_path_index:
-            path, target = my_dataset.imgs[pt_idx]
-            img = my_dataset.loader(str(path))
-
+        for i in class_img_path_index:
+            img = my_dataset.data[i]
             if my_dataset.transform is not None:
                 img = my_dataset.transform(img)
+                # print(f"image 1 {img.shape}")
                 img = img.unsqueeze(0)
+            # print(f"image {img.shape}")
             imgs.append(img)
+            targets.append(int(my_dataset.labels[i]))
+    
 
-            if my_dataset.target_transform is not None:
-                target = my_dataset.target_transform(target)
-            targets.append(int(target))
+    else:
+
+        for class_index in my_dataset.class_to_idx.values():
+            path_one_class_index = np.where(my_dataset.imgs[:, 1] == str(class_index))[0] # [my_dataset.imgs for i in my_dataset.imgs if int(i[1]) == class_index] # get path for the same class
+            # randomization
+            path_one_class_index_select = np.random.permutation(path_one_class_index)[:class_inst_num]
+            class_img_path_index.extend(path_one_class_index_select)
+
+        if my_dataset.load_in_mem:
+            imgs = [my_dataset.data[i].unsqueeze(0) for i in class_img_path_index]
+            targets = [int(my_dataset.labels[i]) for i in class_img_path_index]
+
+        else:
+            # load data for one batch
+            imgs = []
+            targets = []
+
+            for pt_idx in class_img_path_index:
+                path, target = my_dataset.imgs[pt_idx]
+                img = my_dataset.loader(str(path))
+
+                if my_dataset.transform is not None:
+                    img = my_dataset.transform(img)
+                    img = img.unsqueeze(0)
+                imgs.append(img)
+
+                if my_dataset.target_transform is not None:
+                    target = my_dataset.target_transform(target)
+                targets.append(int(target))
 
     # collate_fn
     imgs_tensor = torch.cat(imgs, 0).to(device)
@@ -1395,7 +1424,7 @@ def prepare_x_y(G_batch_size, my_dataset, experiment_name, config, device='cuda'
     original_x_filename = save_dir + '/fixed_original_x.npy'
     original_y_filename = save_dir + '/fixed_original_class.npy'
     torchvision.utils.save_image(imgs_tensor.float().cpu(), original_x_filename_fig,
-                                 nrow=int(imgs_tensor.shape[0] ** 0.5), normalize=True)
+                                 nrow=int(G_batch_size ** 0.5), normalize=True)
     np.save(original_y_filename, target_tensor.cpu().numpy())
     np.save(original_x_filename, imgs_tensor.float().cpu().numpy())
     return imgs_tensor, target_tensor

@@ -192,24 +192,23 @@ def run(config):
             loaders[0], displaytype='s1k' if config['use_multiepoch_sampler'] else 'eta')
     else:
         pbar = tqdm(loaders[0])
+
+
+
     for i, (x, y) in enumerate(pbar):
         # Increment the iteration counter
         state_dict['itr'] += 1
         # Make sure G and D are in training mode, just in case they got set to eval
         # For D, which typically doesn't have BN, this shouldn't matter much.
-        G.train()
-        D.train()
+        G.eval()
+        D.eval()
         if config['ema']:
-            G_ema.train()
+            G_ema.eval()
         if config['D_fp16']:
             x, y = x.to(device).half(), y.to(device)
         else:
             x, y = x.to(device), y.to(device)
-        # print("x {}, y {} input".format(x.shape, y.shape))
-        # gan and vae
-        metrics = train(x, y)
-        train_log.log(itr=int(state_dict['itr']), **metrics)
-
+        
         # Every sv_log_interval, log singular values
         if (config['sv_log_interval'] > 0) and (not (state_dict['itr'] % config['sv_log_interval'])):
             train_log.log(itr=int(state_dict['itr']),

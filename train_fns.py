@@ -190,47 +190,55 @@ def save_and_sample(G, D, E, G_ema, fixed_x, fixed_y, z_, y_,
 
     # Save a random sample sheet with fixed z and y
     # TODO: change here to encode fixed x into z and feed z with fixed y into G
-    with torch.no_grad():
-        # if config['parallel']:
-        #     print("fixed_x: ", fixed_x.shape)
-        #     if config['inference_nosample']:
-        #         _, fixed_z, _ = [i.detach() for i in nn.parallel.data_parallel(E, fixed_x)]
-        #     else:
-        #         fixed_z, _, _ =  [i.detach() for i in nn.parallel.data_parallel(E, fixed_x)]
-        #     print("fixed_z: ", fixed_z.shape)
-        #     print("fixed_y: ", fixed_y.shape)
+    fixed_X = fixed_x.split(config['batch_size'])
+    fixed_Y = fixed_y.split(config['batch_size'])
+    # print(f"fixed_X {fixed_X.shape}")
+    for idx, fixed_x in enumerate(fixed_X):
+        with torch.no_grad():
+            # if config['parallel']:
+            #     print("fixed_x: ", fixed_x.shape)
+            #     if config['inference_nosample']:
+            #         _, fixed_z, _ = [i.detach() for i in nn.parallel.data_parallel(E, fixed_x)]
+            #     else:
+            #         fixed_z, _, _ =  [i.detach() for i in nn.parallel.data_parallel(E, fixed_x)]
+            #     print("fixed_z: ", fixed_z.shape)
+            #     print("fixed_y: ", fixed_y.shape)
 
-        #     output = nn.parallel.data_parallel(
-        #             which_G, (fixed_z, which_G.shared(fixed_y), state_dict['itr'], repeat(None),\
-        #                      repeat(True)))
+            #     output = nn.parallel.data_parallel(
+            #             which_G, (fixed_z, which_G.shared(fixed_y), state_dict['itr'], repeat(None),\
+            #                      repeat(True)))
+                
+            #     fixed_Gz = output[0].detach()
+            #     intermediates = output[1]
+            #     # else:
+            #     #     mask_x_all = [item.detach() for item in output[1]] # [[n, k, h, w],...,]
+
+            # else:
+            fixed_y = fixed_Y[idx]
+            fixed_z, _, _ = E(fixed_x)
+            # print("fixed_x: ", fixed_x.shape)
+            # print("fixed_z: ", fixed_z.shape)
+            # print("fixed_y: ", fixed_y.shape)
+            output = which_G(fixed_z, which_G.shared(fixed_y), state_dict['itr'], return_inter_activation=True)
             
-        #     fixed_Gz = output[0].detach()
-        #     intermediates = output[1]
-        #     # else:
-        #     #     mask_x_all = [item.detach() for item in output[1]] # [[n, k, h, w],...,]
-
-        # else:
-
-        fixed_z, _, _ = E(fixed_x)
-        print("fixed_x: ", fixed_x.shape)
-        print("fixed_z: ", fixed_z.shape)
-        print("fixed_y: ", fixed_y.shape)
-        output = which_G(fixed_z, which_G.shared(fixed_y), state_dict['itr'], return_inter_activation=True)
+            fixed_Gz = output[0].detach()
+            intermediates = output[1]
         
-        fixed_Gz = output[0].detach()
-        intermediates = output[1]
-    
-    
+        
 
-    
-    n, c, h, w = fixed_Gz.shape
-    # log masks 
-    save_dir = '%s/%s/%s' % (config['samples_root'], experiment_name, state_dict['itr'])
-    os.makedirs(save_dir, exist_ok=True)
-    image_filename = save_dir + '/fixed_samples%d.jpg' % (state_dict['itr'])
+        
+        n, c, h, w = fixed_Gz.shape
+        # log masks 
+        save_dir = '%s/%s/%s' % (config['samples_root'], experiment_name, state_dict['itr'])
+        os.makedirs(save_dir, exist_ok=True)
+        image_filename = save_dir + '/fixed_samples%d-batch-%d.jpg' % (state_dict['itr'], idx)
 
-    torchvision.utils.save_image(fixed_Gz, image_filename,
-                                 nrow=int(fixed_Gz.shape[0] ** 0.5), normalize=True)
+
+        # nrows_image = config['onfly_class_inst_num'] if (config['dataset'] not in ['CelebA', 'tiny_imagenet']) else int(fixed_Gz.shape[0] ** 0.5)
+        nrows_image = int(fixed_Gz.shape[0] ** 0.5)
+        print(f"WHHHHHHH {nrows_image}")
+        torchvision.utils.save_image(fixed_Gz, image_filename,
+                                    nrow=nrows_image, normalize=True)
 
     print(f"sparsity_mode {sparsity_mode}")
     if sparsity_mode[0] in ['gradient_topk', 'regularized_sparse_hw_topk']: 

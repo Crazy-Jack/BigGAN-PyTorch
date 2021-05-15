@@ -29,8 +29,8 @@ python ../../train.py \
 --cp_pool_size_per_cluster 100 \
 --cp_num_k 20 \
 --cp_dim 64 \
---cp_warmup_total_iter 1000 \
+--cp_warmup_total_iter 10000 \
 --cp_momentum 1.0 \
-# --resume \
+--resume \
 
 # 1.1: use no momentum pool

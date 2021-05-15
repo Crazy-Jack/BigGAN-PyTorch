@@ -18,6 +18,7 @@ from layer_conv_select import SparseNeuralConv
 from layer_vc_linear_comb import LinearCombineVC
 from layer_conv_select_multiple_path import SparseNeuralConvMulti
 from layer_concept_attention_proto import ConceptAttentionProto
+from layer_concept_attention_moca import MomemtumConceptAttentionProto
 from torch.distributions import Categorical
 
 # Projection of x onto y

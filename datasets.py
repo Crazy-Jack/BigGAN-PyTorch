@@ -335,6 +335,13 @@ class CIFAR10(dset.CIFAR10):
             fo.close()
             self.data = self.data.reshape((10000, 3, 32, 32))
             self.data = self.data.transpose((0, 2, 3, 1))  # convert to HWC
+        
+        
+
+        # labels
+        print(f"TPYE of labels: {type(self.labels)}")
+        self.classes = np.unique(self.labels)
+        self.class_to_idx = {_class: i for i, _class in enumerate(self.classes)}
 
     def __getitem__(self, index):
         """

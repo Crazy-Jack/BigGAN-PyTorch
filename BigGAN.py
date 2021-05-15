@@ -83,7 +83,8 @@ class Generator(nn.Module):
                  test_target_block="", select_index=-1, gumbel_temperature=1.0, 
                  conv_select_kernel_size=5, vc_dict_size=150, sparse_vc_interaction_num=4, sparse_vc_prob_interaction=4, 
                  test_all=False, lambda_l1_reg_dot=10, attend_mode='concept_attention', 
-                 cp_pool_size_per_cluster=100, cp_num_k=20, cp_dim=128, cp_warmup_total_iter=1000, cp_momentum=0.6, **kwargs):
+                 cp_pool_size_per_cluster=100, cp_num_k=20, cp_dim=128, cp_warmup_total_iter=1000, cp_momentum=0.6, 
+                 cp_phi_momentum=0.95, **kwargs):
         super(Generator, self).__init__()
         # Channel width mulitplier
         self.ch = G_ch
@@ -148,6 +149,7 @@ class Generator(nn.Module):
         self.cp_dim = cp_dim
         self.cp_warmup_total_iter = cp_warmup_total_iter
         self.cp_momentum = cp_momentum
+        self.cp_phi_momentum = cp_phi_momentum
         # Architecture dict
         self.arch = G_arch(self.ch, self.attention, sparsity_resolution=self.sparsity_resolution, \
                                 sparsity_ratio=self.sparsity_ratio, no_sparsity=self.no_sparsity)[resolution]
@@ -226,7 +228,14 @@ class Generator(nn.Module):
                           self.arch['resolution'][index])
                     version = attend_mode.split("_")[-1]
                     self.blocks[-1] += [layers.ConceptAttentionProto(self.arch['out_channels'][index], self.which_conv, \
-                        self.cp_pool_size_per_cluster, self.cp_num_k, self.cp_dim, warmup_total_iter=self.cp_warmup_total_iter, momentum=self.cp_momentum)]
+                        self.cp_pool_size_per_cluster, self.cp_num_k, self.cp_dim, warmup_total_iter=self.cp_warmup_total_iter, cp_momentum=self.cp_momentum)]
+                elif 'concept_proto_moca_' in attend_mode:
+                    print('Adding concept_proto_moca_ in G at resolution %d' %
+                          self.arch['resolution'][index])
+                    self.blocks[-1] += [layers.MomemtumConceptAttentionProto(self.arch['out_channels'][index], self.which_conv, \
+                        self.cp_pool_size_per_cluster, self.cp_num_k, self.cp_dim, warmup_total_iter=self.cp_warmup_total_iter, \
+                        cp_momentum=self.cp_momentum, cp_phi_momentum=self.cp_phi_momentum)]
+                
                 else:
                     print('Adding attention layer in G at resolution %d' %
                           self.arch['resolution'][index])

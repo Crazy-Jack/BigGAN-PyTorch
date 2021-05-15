@@ -13,15 +13,15 @@ from torch.nn import Parameter as P
 from torch.autograd import Variable
 import faiss
 
-from sync_batchnorm import SynchronizedBatchNorm2d as SyncBN2d
 from sklearn.cluster import KMeans
 from torch.distributions import Categorical
 
 
-class ConceptAttentionProto(nn.Module):
+class MomemtumConceptAttentionProto(nn.Module):
     """concept attention"""
-    def __init__(self, ch, which_conv, pool_size_per_cluster, num_k, feature_dim, warmup_total_iter=1000, cp_momentum=0.3, device='cuda'):
-        super(ConceptAttentionProto, self).__init__()
+    def __init__(self, ch, which_conv, pool_size_per_cluster, num_k, feature_dim, warmup_total_iter=1000, cp_momentum=0.3, \
+                cp_phi_momentum=0.95, device='cuda'):
+        super(MomemtumConceptAttentionProto, self).__init__()
         self.myid = "atten_concept_prototypes"
         self.device = device
         self.pool_size_per_cluster = pool_size_per_cluster
@@ -29,6 +29,7 @@ class ConceptAttentionProto(nn.Module):
         self.feature_dim = feature_dim
         self.ch = ch # input channel
         self.total_pool_size = self.num_k * self.pool_size_per_cluster
+        
         self.register_buffer('concept_pool', torch.rand(self.feature_dim, self.total_pool_size))
         self.register_buffer('concept_proto', torch.rand(self.feature_dim, self.num_k))
         # concept pool is arranged as memory cell, i.e. linearly arranged as a 2D tensor, use get_cluster_ptr to get starting pointer for each cluster
@@ -43,8 +44,18 @@ class ConceptAttentionProto(nn.Module):
         self.which_conv = which_conv
         self.theta = self.which_conv(
             self.ch, self.feature_dim, kernel_size=1, padding=0, bias=False)
+
         self.phi = self.which_conv(
             self.ch, self.feature_dim, kernel_size=1, padding=0, bias=False)
+        
+        self.phi_k = self.which_conv(
+            self.ch, self.feature_dim, kernel_size=1, padding=0, bias=False)
+        
+        for param_phi, param_phi_k in zip(self.phi.parameters(), self.phi_k.parameters()):
+            param_phi_k.data.copy_(param_phi.data)  # initialize
+            param_phi_k.requires_grad = False  # not update by gradient
+        
+
         self.g = self.which_conv(
             self.ch, self.feature_dim, kernel_size=1, padding=0, bias=False)
         self.o = self.which_conv(
@@ -54,6 +65,7 @@ class ConceptAttentionProto(nn.Module):
 
         # self.momentum
         self.cp_momentum = cp_momentum
+        self.cp_phi_momentum = cp_phi_momentum
         
     #############################
     #       Pool operation      #
@@ -333,7 +345,7 @@ class ConceptAttentionProto(nn.Module):
             n, c, h, w = theta.shape
 
             # if still in warmup, skip attention
-            self.warmup_sampling(theta) 
+            self.warmup_sampling(phi) 
             self._check_warmup_state()
 
             # normal self attention
@@ -342,69 +354,124 @@ class ConceptAttentionProto(nn.Module):
             g = g.view(-1, self.feature_dim, x.shape[2] * x.shape[3])
 
             # Matmul and softmax to get attention maps
-            beta = F.softmax(torch.bmm(theta.transpose(1, 2), phi), -1)
+            beta = F.softmax(torch.bmm(theta.transpose(1, 2).contiguous(), phi), -1)
+
             # Attention map times g path
-            o = self.o(torch.bmm(g, beta.transpose(1, 2)).view(-1,
+            o = self.o(torch.bmm(g, beta.transpose(1, 2).contiguous()).view(-1,
                                                             self.feature_dim, x.shape[2], x.shape[3]))
+            
             return self.gamma * o + x
 
         else:
             
             # transform into low dimension
             theta = self.theta(x) # [n, c, h, w]
-
+            phi = self.phi(x)
+            g = self.g(x) # [n, c, h, w]
             n, c, h, w = theta.shape
 
             # attend to concepts 
             ## selecting cooresponding prototypes -> [n, h, w]
-            theta = torch.transpose(torch.transpose(theta, 0, 1).reshape(c, n * h * w), 0, 1) # n * h * w, c
+            theta = torch.transpose(torch.transpose(theta, 0, 1).reshape(c, n * h * w), 0, 1).contiguous() # n * h * w, c
+            phi = torch.transpose(torch.transpose(phi, 0, 1).reshape(c, n * h * w), 0, 1).contiguous() # n * h * w, c
             with torch.no_grad():
                 theta_atten_proto = torch.matmul(theta, self.concept_proto.detach().clone()) # n * h * w, num_k
                 cluster_affinity = F.softmax(theta_atten_proto, dim=1) # n * h * w, num_k
                 # print(f"cluster_affinity.max(1) {cluster_affinity.max(1)}")
                 cluster_assignment = cluster_affinity.max(1)[1] # [n * h * w, ]
 
-            # update pool first to allow contextual information 
-            # should use the lambda to update concept pool momentumlly
-            self.forward_update_pool(theta, cluster_assignment, momentum=self.cp_momentum)
-
-            # update prototypes
-            self.computate_prototypes()
-
 
             # for loop for each cluster
             # store mapping
 
-            results = []
+            dot_product = []
             cluster_indexs = []
 
             for cluster in range(self.num_k):
-                cluster_index = torch.where(cluster_assignment == cluster)[0] # num of cluster
-                theta_cluster = theta[cluster_index, :] # -1, c
+                cluster_index = torch.where(cluster_assignment == cluster)[0] # [n * h * w]
+                theta_cluster = theta[cluster_index] # number of data  belong to the same cluster, c
                 
                 # attend to certain cluster
                 cluster_pool = self.concept_pool.detach().clone()[:, cluster * self.pool_size_per_cluster: (cluster + 1) * self.pool_size_per_cluster] # [c, pool_size_per_cluster]
-                theta_cluster_attend_weight = F.softmax(torch.matmul(theta_cluster, cluster_pool), -1) # [-1, pool_size_per_cluster]
-                # map to back
-                beta_cluster = torch.matmul(theta_cluster_attend_weight, cluster_pool.T) # [num_data_in_cluster, c]
+                
+                theta_cluster_attend_weight = torch.matmul(theta_cluster, cluster_pool) # [num_data_in_cluster, pool_size_per_cluster]
+                # # map to back
+                # beta_cluster = torch.matmul(theta_cluster_attend_weight, cluster_pool.T) # [num_data_in_cluster, c]
 
-                results.append(beta_cluster)
+                dot_product.append(theta_cluster_attend_weight)
                 cluster_indexs.append(cluster_index)
             
             # integrate into one tensor
-            results = torch.cat(results, axis=0)
+            dot_product = torch.cat(dot_product, axis=0) # [n * h * w, pool_size_per_cluster] but with different order
             cluster_indexs = torch.cat(cluster_indexs, axis=0)
 
             # remap it back into order Variable(torch.ones(2, 2), requires_grad=True)
-            results_out = torch.zeros_like(results).to(self.device)
-            results_out[cluster_indexs] = results # n * h * w, c
-            results_out = results_out.T # c, n * h * w
+            mapping_to_normal_index = torch.argsort(cluster_indexs)
+            similarity_clusters = dot_product[mapping_to_normal_index] # n * h * w, pool_size_per_cluster
+            
+            # dot product with context
+            similarity_context = torch.bmm(theta.reshape(n, h*w, c), torch.transpose(phi.reshape(n, h * w, c), 1, 2)) # [n, h*w, h*w]
+            similarity_context = similarity_context.reshape(n * h * w, h * w) # n * h * w, h * w
+            atten_weight = torch.cat([similarity_clusters, similarity_context], axis=1) # [n * h * w, pool_size_per_cluster + h * w]
+            atten_weight = F.softmax(atten_weight, dim=1) # [n * h * w, pool_size_per_cluster + h * w]
 
-            results_out = torch.transpose(results_out.reshape(c, n, h, w), 0, 1) # n, c, h, w
+            # attend 
+            pool_residuals = []
+            cluster_indexs = []
+            for cluster in range(self.num_k):
+                cluster_index = torch.where(cluster_assignment == cluster)[0] # [n * h * w]
+                theta_cluster = theta[cluster_index] # number of data  belong to the same cluster, c
+                atten_weight_pool_cluster = atten_weight[cluster_index, :self.pool_size_per_cluster] # [number of data  belong to the same cluster, pool_size_per_cluster]
+                # attend to certain cluster
+                cluster_pool = self.concept_pool.detach().clone()[:, cluster * self.pool_size_per_cluster: (cluster + 1) * self.pool_size_per_cluster] # [c, pool_size_per_cluster]
+                pool_residual = torch.matmul(atten_weight_pool_cluster, cluster_pool.T) # [num_batch_data_in_cluster, c]
+                pool_residuals.append(pool_residual)
+                cluster_indexs.append(cluster_index)
+            pool_residuals = torch.cat(pool_residuals, axis=0) # [n * h * w, c] but with different order
+            cluster_indexs = torch.cat(cluster_indexs, axis=0)
 
-            out = self.o(results_out)
+            # remap it back into order 
+            mapping_to_normal_index = torch.argsort(cluster_indexs)
+            pool_residuals = pool_residuals[mapping_to_normal_index] # n * h * w, c with correct order 
+            pool_residuals = pool_residuals.reshape(n, h * w, c) # n, h * w, c
 
-            return out * self.gamma + x
+            # add with context 
+            atten_weight_context = atten_weight[:, self.pool_size_per_cluster:] # [n * h * w, h * w]
+            atten_weight_context = atten_weight_context.reshape(n, h*w, h*w) # n, h*w, h*w
+            context_residuals = torch.bmm(atten_weight_context, g.reshape(n, h * w, c)) # n, h * w, c, context residual is calcuated by g not phi
+
+            # integrate context residual with pool residual
+            beta_residual = pool_residuals + context_residuals  # n, h * w, c
+            beta_residual = torch.transpose(beta_residual, 1, 2).reshape(n, c, h, w).contiguous()
+
+            print(f"beta_residual {beta_residual.shape}")
+            o = self.o(beta_residual) # n, h, w, c
+
+
+            ### update pool
+            with torch.no_grad():
+                # moca update
+                phi_k = self.phi_k(x) # [n, c, h, w]
+                phi_k = torch.transpose(torch.transpose(phi_k, 0, 1).reshape(c, n * h * w), 0, 1).contiguous() # n * h * w, c
+                phi_k_atten_proto = torch.matmul(phi_k, self.concept_proto.detach().clone()) # n * h * w, num_k
+                phi_k_atten_proto = phi_k_atten_proto.reshape(n, h * w, -1) # n, h * w, num_k
+                cluster_affinity_phi_k = F.softmax(phi_k_atten_proto, dim=2) # n, h * w, num_k
+                # print(f"cluster_affinity.max(1) {cluster_affinity.max(1)}")
+                cluster_assignment_phi_k = cluster_affinity_phi_k.max(2)[1].reshape(n * h * w, ) # [n * h * w, ]
+            
+                # update pool first to allow contextual information 
+                # should use the lambda to update concept pool momentumlly
+                self.forward_update_pool(phi_k, cluster_assignment_phi_k, momentum=self.cp_momentum)
+
+                # update prototypes
+                self.computate_prototypes()
+
+                # update phi_k
+                for param_q, param_k in zip(self.phi.parameters(), self.phi_k.parameters()):
+                    param_k.data = param_k.data * self.cp_phi_momentum + param_q.data * (1. - self.cp_phi_momentum)
+
+                
+            return o * self.gamma + x
             
 
     #############################
